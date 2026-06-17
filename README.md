@@ -20,6 +20,17 @@ generate Hugo-compatible content and assets into `site/` when adapter tooling is
 introduced. This keeps the knowledge model independent from the presentation
 layer while still allowing Hugo to provide fast static rendering.
 
+## Generate Hugo Content
+
+Generate the Hugo shadow content from the canonical OKF tree with:
+
+```sh
+python tools/okf_hugo_adapter.py --src okf --dst site/content
+```
+
+Use `--check` in CI or review workflows to verify that generated content is up
+to date without modifying `site/content/`.
+
 ## Repository Layout
 
 ```text
