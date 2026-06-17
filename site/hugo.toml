@@ -1,0 +1,6 @@
+baseURL = "https://example.org/"
+locale = "en-us"
+title = "HOKF"
+
+[params]
+description = "Hugo-based Open Knowledge Framework"
