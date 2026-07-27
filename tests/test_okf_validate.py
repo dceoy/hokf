@@ -78,22 +78,29 @@ class OkfValidateTest(unittest.TestCase):
             )
 
             findings = validate_bundle(root, today=date(2026, 7, 3))
-            subjects = {
+            error_subjects = {
                 finding.subject
                 for finding in findings
                 if finding.severity == "ERROR"
             }
+            warning_subjects = {
+                finding.subject
+                for finding in findings
+                if finding.severity == "WARNING"
+            }
 
-            self.assertIn("okf_version", subjects)
-            self.assertIn("frontmatter", subjects)
-            self.assertIn("type", subjects)
-            self.assertIn("generated.by", subjects)
-            self.assertIn("generated.at", subjects)
-            self.assertIn("verified[0]", subjects)
-            self.assertIn("sources[0].resource", subjects)
-            self.assertIn("status", subjects)
-            self.assertIn("stale_after", subjects)
-            self.assertIn("heading:July 2", subjects)
+            self.assertIn("okf_version", error_subjects)
+            self.assertIn("frontmatter", error_subjects)
+            self.assertIn("type", error_subjects)
+            self.assertIn("heading:July 2", error_subjects)
+
+            # Optional metadata (OKF v0.2 §5-10) is advisory, not blocking.
+            self.assertIn("generated.by", warning_subjects)
+            self.assertIn("generated.at", warning_subjects)
+            self.assertIn("verified[0]", warning_subjects)
+            self.assertIn("sources[0].resource", warning_subjects)
+            self.assertIn("status", warning_subjects)
+            self.assertIn("stale_after", warning_subjects)
 
     def test_advisories_warn_without_failing_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -134,11 +141,29 @@ class OkfValidateTest(unittest.TestCase):
                     1,
                 )
 
-    def test_root_index_without_front_matter_reports_missing_version(self) -> None:
+    def test_root_index_without_declared_version_is_conformant(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "okf"
             root.mkdir()
             (root / "index.md").write_text("# Undeclared Bundle\n", encoding="utf-8")
+            (root / "log.md").write_text(
+                "# Bundle Log\n\n## 2026-07-01\n\n* Created.\n", encoding="utf-8"
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            errors = {
+                finding.subject for finding in findings if finding.severity == "ERROR"
+            }
+
+            self.assertNotIn("okf_version", errors)
+
+    def test_root_index_with_wrong_declared_version_still_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.1\"\n---\n# Bundle\n", encoding="utf-8"
+            )
             (root / "log.md").write_text(
                 "# Bundle Log\n\n## 2026-07-01\n\n* Created.\n", encoding="utf-8"
             )

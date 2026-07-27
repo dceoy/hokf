@@ -73,11 +73,14 @@ hugo --source site --destination public --cleanDestinationDir \
 
 ## Validation behavior
 
-The validator returns a non-zero status for objective OKF v0.2 conformance
-errors, such as invalid YAML, a missing concept `type`, malformed optional
-metadata, or invalid reserved documents. It reports quality concerns such as
-broken links, stale or orphaned concepts, inconsistent tags, missing recommended
-metadata, duplicates, and legacy `timestamp` as warnings without failing.
+The validator returns a non-zero status only for objective OKF v0.2 conformance
+errors: invalid YAML, a missing or empty concept `type`, an invalid declared
+`okf_version`, or invalid reserved documents. `okf_version` itself is optional.
+It reports everything else as advisory warnings without failing, including
+malformed optional metadata (`resource`, `tags`, `generated`, `verified`,
+`sources`, `usage_window`, `status`, computation fields), broken links, stale
+or orphaned concepts, inconsistent tags, missing recommended metadata,
+duplicates, and legacy `timestamp`.
 
 Use a deliberate quality gate when needed:
 

@@ -118,6 +118,35 @@ class OkfHugoAdapterTest(unittest.TestCase):
 
             self.assertEqual(check_generated_content(src, dst), 0)
 
+    def test_check_reports_missing_destination_before_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "site" / "content"
+            src.mkdir(parents=True)
+            (src / "index.md").write_text("# Index\n", encoding="utf-8")
+
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                self.assertEqual(check_generated_content(src, dst), 1)
+
+            self.assertIn(str(dst), stderr.getvalue())
+            self.assertFalse(dst.exists())
+
+    def test_cli_check_reports_missing_destination_before_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "site" / "content"
+            src.mkdir(parents=True)
+            (src / "index.md").write_text("# Index\n", encoding="utf-8")
+
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                self.assertEqual(
+                    main(["--src", str(src), "--dst", str(dst), "--check"]), 1
+                )
+
+            self.assertFalse(dst.exists())
+
     def test_cli_reports_invalid_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

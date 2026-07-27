@@ -158,15 +158,7 @@ def validate_index(document: OkfDocument) -> list[Finding]:
                     f"remove {', '.join(extra_keys)}",
                 )
             )
-        if "okf_version" not in metadata:
-            findings.append(
-                error(
-                    document,
-                    "okf_version",
-                    'root index front matter must declare okf_version: "0.2"',
-                )
-            )
-        elif metadata["okf_version"] != "0.2":
+        if "okf_version" in metadata and metadata["okf_version"] != "0.2":
             findings.append(
                 error(
                     document,
@@ -298,7 +290,7 @@ def validate_optional_metadata(
 
     if "resource" in metadata and not is_nonempty_string(metadata["resource"]):
         findings.append(
-            error(document, "resource", "resource must be a non-empty string")
+            warning(document, "resource", "resource must be a non-empty string")
         )
 
     if "tags" in metadata:
@@ -307,14 +299,16 @@ def validate_optional_metadata(
             is_nonempty_string(tag) for tag in tags
         ):
             findings.append(
-                error(document, "tags", "tags must be a YAML list of non-empty strings")
+                warning(
+                    document, "tags", "tags must be a YAML list of non-empty strings"
+                )
             )
 
     if "generated" in metadata:
         generated = metadata["generated"]
         if not isinstance(generated, dict):
             findings.append(
-                error(
+                warning(
                     document,
                     "generated",
                     "generated must be a mapping with by and at",
@@ -328,7 +322,7 @@ def validate_optional_metadata(
         events = [verified] if isinstance(verified, dict) else verified
         if not isinstance(events, list) or not events:
             findings.append(
-                error(
+                warning(
                     document,
                     "verified",
                     "verified must be an event mapping or a non-empty list "
@@ -339,7 +333,7 @@ def validate_optional_metadata(
             for index, event in enumerate(events):
                 if not isinstance(event, dict):
                     findings.append(
-                        error(
+                        warning(
                             document,
                             f"verified[{index}]",
                             "verification event must be a mapping with by and at",
@@ -354,7 +348,7 @@ def validate_optional_metadata(
         sources = metadata["sources"]
         if not isinstance(sources, list):
             findings.append(
-                error(document, "sources", "sources must be a YAML list of mappings")
+                warning(document, "sources", "sources must be a YAML list of mappings")
             )
         else:
             for index, source in enumerate(sources):
@@ -367,7 +361,7 @@ def validate_optional_metadata(
 
     if "status" in metadata and metadata["status"] not in STATUS_VALUES:
         findings.append(
-            error(
+            warning(
                 document,
                 "status",
                 "status must be one of draft, stable, or deprecated",
@@ -378,7 +372,7 @@ def validate_optional_metadata(
         stale_after = parse_iso_date(metadata["stale_after"])
         if stale_after is None:
             findings.append(
-                error(
+                warning(
                     document,
                     "stale_after",
                     "stale_after must be an ISO YYYY-MM-DD date",
@@ -405,7 +399,7 @@ def validate_event(
     actor = event.get("by")
     if not is_nonempty_string(actor) or not ACTOR_RE.fullmatch(actor):
         findings.append(
-            error(
+            warning(
                 document,
                 f"{subject}.by",
                 "actor must use human:<id>, process:<id>, or <producer>/<version>",
@@ -413,7 +407,7 @@ def validate_event(
         )
     if parse_iso_datetime(event.get("at")) is None:
         findings.append(
-            error(
+            warning(
                 document,
                 f"{subject}.at",
                 "event time must be an ISO 8601 datetime",
@@ -427,17 +421,19 @@ def validate_source(
 ) -> list[Finding]:
     subject = f"sources[{index}]"
     if not isinstance(source, dict):
-        return [error(document, subject, "source entry must be a mapping")]
+        return [warning(document, subject, "source entry must be a mapping")]
 
     findings: list[Finding] = []
     if not is_nonempty_string(source.get("resource")):
         findings.append(
-            error(document, f"{subject}.resource", "source resource is required")
+            warning(document, f"{subject}.resource", "source resource is required")
         )
     for key in ("id", "title", "author"):
         if key in source and not is_nonempty_string(source[key]):
             findings.append(
-                error(document, f"{subject}.{key}", f"{key} must be a non-empty string")
+                warning(
+                    document, f"{subject}.{key}", f"{key} must be a non-empty string"
+                )
             )
     if "usage_count" in source and (
         isinstance(source["usage_count"], bool)
@@ -445,7 +441,7 @@ def validate_source(
         or source["usage_count"] < 0
     ):
         findings.append(
-            error(
+            warning(
                 document,
                 f"{subject}.usage_count",
                 "usage_count must be a non-negative integer",
@@ -453,7 +449,7 @@ def validate_source(
         )
     if "last_modified" in source and parse_iso_date(source["last_modified"]) is None:
         findings.append(
-            error(
+            warning(
                 document,
                 f"{subject}.last_modified",
                 "last_modified must be an ISO YYYY-MM-DD date",
@@ -473,7 +469,7 @@ def validate_usage_window(
 ) -> list[Finding]:
     if not isinstance(value, dict):
         return [
-            error(
+            warning(
                 document,
                 subject,
                 "usage window must be a mapping with from and to dates",
@@ -484,15 +480,15 @@ def validate_usage_window(
     end = parse_iso_date(value.get("to"))
     if start is None:
         findings.append(
-            error(document, f"{subject}.from", "from must be an ISO YYYY-MM-DD date")
+            warning(document, f"{subject}.from", "from must be an ISO YYYY-MM-DD date")
         )
     if end is None:
         findings.append(
-            error(document, f"{subject}.to", "to must be an ISO YYYY-MM-DD date")
+            warning(document, f"{subject}.to", "to must be an ISO YYYY-MM-DD date")
         )
     if start is not None and end is not None and start > end:
         findings.append(
-            error(document, subject, "usage window from date must not follow to date")
+            warning(document, subject, "usage window from date must not follow to date")
         )
     return findings
 
@@ -505,7 +501,7 @@ def validate_computation_fields(
         metadata.get("runtime")
     ):
         findings.append(
-            error(
+            warning(
                 document,
                 "runtime",
                 "Attested Computation concepts require a non-empty runtime",
@@ -513,11 +509,11 @@ def validate_computation_fields(
         )
     if "runtime" in metadata and not is_nonempty_string(metadata["runtime"]):
         findings.append(
-            error(document, "runtime", "runtime must be a non-empty string")
+            warning(document, "runtime", "runtime must be a non-empty string")
         )
     if "computation" in metadata and not is_nonempty_string(metadata["computation"]):
         findings.append(
-            error(
+            warning(
                 document,
                 "computation",
                 "computation must be a non-empty path string",
@@ -527,20 +523,20 @@ def validate_computation_fields(
         parameters = metadata["parameters"]
         if not isinstance(parameters, list):
             findings.append(
-                error(document, "parameters", "parameters must be a YAML list")
+                warning(document, "parameters", "parameters must be a YAML list")
             )
         else:
             for index, parameter in enumerate(parameters):
                 subject = f"parameters[{index}]"
                 if not isinstance(parameter, dict):
                     findings.append(
-                        error(document, subject, "parameter must be a mapping")
+                        warning(document, subject, "parameter must be a mapping")
                     )
                     continue
                 for key in ("name", "type"):
                     if not is_nonempty_string(parameter.get(key)):
                         findings.append(
-                            error(
+                            warning(
                                 document,
                                 f"{subject}.{key}",
                                 f"parameter {key} must be a non-empty string",
@@ -550,7 +546,7 @@ def validate_computation_fields(
                     parameter["required"], bool
                 ):
                     findings.append(
-                        error(
+                        warning(
                             document,
                             f"{subject}.required",
                             "parameter required must be a boolean",
@@ -561,11 +557,11 @@ def validate_computation_fields(
             continue
         value = metadata[field]
         if not isinstance(value, dict):
-            findings.append(error(document, field, f"{field} must be a mapping"))
+            findings.append(warning(document, field, f"{field} must be a mapping"))
             continue
         if not is_nonempty_string(value.get("resource")):
             findings.append(
-                error(
+                warning(
                     document,
                     f"{field}.resource",
                     f"{field} resource must be a non-empty string",
@@ -576,7 +572,7 @@ def validate_computation_fields(
             or not all(is_nonempty_string(item) for item in value["receipt"])
         ):
             findings.append(
-                error(
+                warning(
                     document,
                     "executor.receipt",
                     "executor receipt must be a list of non-empty field names",

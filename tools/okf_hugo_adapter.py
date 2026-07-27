@@ -78,6 +78,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def check_generated_content(src: Path, dst: Path) -> int:
+    if not dst.is_dir():
+        print(f"generated content missing: {dst} does not exist", file=sys.stderr)
+        return 1
+
     with tempfile.TemporaryDirectory(prefix="okf-hugo-check-") as tmp:
         expected_dst = Path(tmp) / "content"
         generate_content(src, expected_dst)
