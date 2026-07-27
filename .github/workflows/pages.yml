@@ -27,6 +27,7 @@ jobs:
 
       - name: Configure GitHub Pages
         id: pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Set up Python
@@ -75,21 +76,29 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Build Hugo site
+        env:
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
         run: |
+          base_url="${PAGES_BASE_URL:-https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}}"
           hugo --source site --destination public --minify --cleanDestinationDir \
-            --baseURL "${{ steps.pages.outputs.base_url }}/"
+            --baseURL "${base_url}/"
 
       - name: Generate Pagefind index
         run: npm run pagefind
 
       - name: Assert static site output
+        env:
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
         run: |
+          base_url="${PAGES_BASE_URL:-https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}}"
+          base_path="/${base_url#*://*/}/"
           test -f site/public/index.html
           test -f site/public/concepts/architecture/index.html
           test -f site/public/pagefind/pagefind-ui.js
           test -f site/public/pagefind/pagefind-ui.css
           grep --fixed-strings "HOKF architecture" site/public/concepts/architecture/index.html
           grep --fixed-strings "concepts/architecture/" site/public/index.html
+          grep --fixed-strings "data-pagefind-base=${base_path}" site/public/index.html
 
       - name: Upload Pages artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

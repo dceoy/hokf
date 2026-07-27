@@ -150,6 +150,67 @@ class OkfValidateTest(unittest.TestCase):
 
             self.assertIn("okf_version", errors)
 
+    def test_duplicate_titles_preserve_distinct_non_ascii_titles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n"
+                "# Concepts\n\n"
+                "* [Architecture](architecture.md)\n"
+                "* [Runbook](runbook.md)\n"
+                "* [Copy](copy.md)\n",
+                encoding="utf-8",
+            )
+            (root / "architecture.md").write_text(
+                "---\ntype: Concept\ntitle: アーキテクチャ\n---\n# Architecture\n",
+                encoding="utf-8",
+            )
+            (root / "runbook.md").write_text(
+                "---\ntype: Concept\ntitle: 運用手順\n---\n# Runbook\n",
+                encoding="utf-8",
+            )
+            (root / "copy.md").write_text(
+                "---\ntype: Concept\ntitle: Architecture\n---\n# Copy\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            duplicate_findings = [
+                finding for finding in findings if finding.subject == "title"
+            ]
+
+            self.assertEqual(duplicate_findings, [])
+
+    def test_duplicate_titles_still_detected_for_ascii_variants(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n"
+                "# Concepts\n\n"
+                "* [A](a.md)\n"
+                "* [B](b.md)\n",
+                encoding="utf-8",
+            )
+            (root / "a.md").write_text(
+                "---\ntype: Concept\ntitle: Architecture\n---\n# A\n",
+                encoding="utf-8",
+            )
+            (root / "b.md").write_text(
+                "---\ntype: Concept\ntitle: ARCHITECTURE\n---\n# B\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            duplicate_subjects = {
+                str(finding.path)
+                for finding in findings
+                if finding.subject == "title"
+            }
+
+            self.assertEqual(duplicate_subjects, {"a.md", "b.md"})
+
 
 if __name__ == "__main__":
     unittest.main()

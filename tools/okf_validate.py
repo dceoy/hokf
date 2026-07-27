@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
@@ -682,7 +683,11 @@ def find_duplicate_warnings(concepts: Iterable[OkfDocument]) -> list[Finding]:
         title = (document.metadata or {}).get("title")
         if not is_nonempty_string(title):
             continue
-        normalized = re.sub(r"[^a-z0-9]+", "", title.casefold())
+        normalized = re.sub(
+            r"[^\w]+", "", unicodedata.normalize("NFKC", title).casefold()
+        )
+        if not normalized:
+            continue
         grouped.setdefault(normalized, []).append(document)
 
     findings = []

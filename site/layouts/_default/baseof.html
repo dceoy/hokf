@@ -20,6 +20,7 @@
         id="search"
         data-pagefind-ui="{{ "pagefind/pagefind-ui.js" | relURL }}"
         data-pagefind-bundle="{{ "pagefind/" | relURL }}"
+        data-pagefind-base="{{ .Site.Home.RelPermalink }}"
       >
         <p id="search-status">Search is available after the Pagefind index is generated.</p>
       </div>
@@ -37,10 +38,18 @@
         script.src = search.dataset.pagefindUi;
         script.onload = function () {
           document.querySelector("#search-status")?.remove();
+          const base = search.dataset.pagefindBase.replace(/\/$/, "");
           new window.PagefindUI({
             element: "#search",
             bundlePath: search.dataset.pagefindBundle,
             showSubResults: true,
+            processResult: function (result) {
+              result.url = base + result.url;
+              for (const subResult of result.sub_results || []) {
+                subResult.url = base + subResult.url;
+              }
+              return result;
+            },
           });
         };
         script.onerror = function () {
