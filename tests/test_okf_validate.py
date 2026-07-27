@@ -99,7 +99,9 @@ class OkfValidateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "okf"
             root.mkdir()
-            (root / "index.md").write_text("# Empty Index\n", encoding="utf-8")
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n# Empty Index\n", encoding="utf-8"
+            )
             (root / "orphan.md").write_text(
                 "---\n"
                 "type: Minimal\n"
@@ -131,6 +133,22 @@ class OkfValidateTest(unittest.TestCase):
                     main(["--src", str(root), "--warnings-as-errors"]),
                     1,
                 )
+
+    def test_root_index_without_front_matter_reports_missing_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text("# Undeclared Bundle\n", encoding="utf-8")
+            (root / "log.md").write_text(
+                "# Bundle Log\n\n## 2026-07-01\n\n* Created.\n", encoding="utf-8"
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            errors = {
+                finding.subject for finding in findings if finding.severity == "ERROR"
+            }
+
+            self.assertIn("okf_version", errors)
 
 
 if __name__ == "__main__":

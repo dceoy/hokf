@@ -155,6 +155,16 @@ class OkfHugoAdapterTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 main(["--src", str(src), "--dst", str(root), "--clean"])
 
+    def test_front_matter_preserves_legacy_yaml_scalars(self) -> None:
+        metadata, _, present = split_front_matter(
+            "---\non: keep\nanswer: yes\nflag: true\n---\nBody\n"
+        )
+
+        self.assertTrue(present)
+        self.assertEqual(metadata["on"], "keep")
+        self.assertEqual(metadata["answer"], "yes")
+        self.assertIs(metadata["flag"], True)
+
 
 if __name__ == "__main__":
     unittest.main()

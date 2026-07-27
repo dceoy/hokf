@@ -135,8 +135,8 @@ def validate_index(document: OkfDocument) -> list[Finding]:
     findings: list[Finding] = []
     is_root = document.relative_path == PurePosixPath("index.md")
 
-    if document.has_front_matter:
-        if not is_root:
+    if not is_root:
+        if document.has_front_matter:
             findings.append(
                 error(
                     document,
@@ -145,26 +145,34 @@ def validate_index(document: OkfDocument) -> list[Finding]:
                     "remove it",
                 )
             )
-        else:
-            metadata = document.metadata or {}
-            extra_keys = sorted(set(metadata) - {"okf_version"})
-            if extra_keys:
-                findings.append(
-                    error(
-                        document,
-                        "frontmatter",
-                        "root index front matter may contain only okf_version; "
-                        f"remove {', '.join(extra_keys)}",
-                    )
+    else:
+        metadata = document.metadata or {}
+        extra_keys = sorted(set(metadata) - {"okf_version"})
+        if extra_keys:
+            findings.append(
+                error(
+                    document,
+                    "frontmatter",
+                    "root index front matter may contain only okf_version; "
+                    f"remove {', '.join(extra_keys)}",
                 )
-            if "okf_version" in metadata and metadata["okf_version"] != "0.2":
-                findings.append(
-                    error(
-                        document,
-                        "okf_version",
-                        'declared version must be the string "0.2"',
-                    )
+            )
+        if "okf_version" not in metadata:
+            findings.append(
+                error(
+                    document,
+                    "okf_version",
+                    'root index front matter must declare okf_version: "0.2"',
                 )
+            )
+        elif metadata["okf_version"] != "0.2":
+            findings.append(
+                error(
+                    document,
+                    "okf_version",
+                    'declared version must be the string "0.2"',
+                )
+            )
 
     if not TOP_LEVEL_HEADING_RE.search(document.body):
         findings.append(

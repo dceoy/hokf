@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -15,6 +16,28 @@ FRONT_MATTER_DELIMITER = "---"
 
 class FrontMatterError(ValueError):
     """Raised when a YAML front matter block cannot be parsed."""
+
+
+class _ProducerSafeLoader(yaml.SafeLoader):
+    """SafeLoader restricted to YAML 1.2 core-schema booleans."""
+
+
+# PyYAML's SafeLoader follows YAML 1.1 and coerces bare scalars like `on`,
+# `off`, `yes`, and `no` to booleans, which corrupts producer-defined string
+# keys and values. Narrow the resolver to the YAML 1.2 boolean tokens only.
+_ProducerSafeLoader.yaml_implicit_resolvers = {
+    first_char: [
+        (tag, regexp)
+        for tag, regexp in resolvers
+        if tag != "tag:yaml.org,2002:bool"
+    ]
+    for first_char, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_ProducerSafeLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool",
+    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+    list("tTfF"),
+)
 
 
 @dataclass(frozen=True)
@@ -85,7 +108,7 @@ def split_front_matter(markdown: str) -> tuple[dict[str, Any] | None, str, bool]
 
     source = "".join(lines[1:closing_index])
     try:
-        loaded = yaml.safe_load(source)
+        loaded = yaml.load(source, Loader=_ProducerSafeLoader)
     except yaml.YAMLError as error:
         problem = getattr(error, "problem", None) or str(error).splitlines()[0]
         raise FrontMatterError(f"invalid YAML front matter: {problem}") from error

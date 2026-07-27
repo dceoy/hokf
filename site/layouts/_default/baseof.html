@@ -16,7 +16,11 @@
         <a class="site-title" href="{{ .Site.Home.RelPermalink }}">{{ .Site.Title }}</a>
         <a href="#search">Search</a>
       </nav>
-      <div id="search" data-pagefind-ui="{{ "pagefind/pagefind-ui.js" | relURL }}">
+      <div
+        id="search"
+        data-pagefind-ui="{{ "pagefind/pagefind-ui.js" | relURL }}"
+        data-pagefind-bundle="{{ "pagefind/" | relURL }}"
+      >
         <p id="search-status">Search is available after the Pagefind index is generated.</p>
       </div>
     </header>
@@ -26,15 +30,24 @@
     <footer data-pagefind-ignore>
       <p>Generated from canonical Open Knowledge Format v0.2 source.</p>
     </footer>
-    <script type="module">
-      const search = document.querySelector("[data-pagefind-ui]");
-      try {
-        const { PagefindUI } = await import(search.dataset.pagefindUi);
-        document.querySelector("#search-status")?.remove();
-        new PagefindUI({ element: "#search", showSubResults: true });
-      } catch {
-        // A plain Hugo preview intentionally works before Pagefind has run.
-      }
+    <script>
+      (function () {
+        const search = document.querySelector("[data-pagefind-ui]");
+        const script = document.createElement("script");
+        script.src = search.dataset.pagefindUi;
+        script.onload = function () {
+          document.querySelector("#search-status")?.remove();
+          new window.PagefindUI({
+            element: "#search",
+            bundlePath: search.dataset.pagefindBundle,
+            showSubResults: true,
+          });
+        };
+        script.onerror = function () {
+          // A plain Hugo preview intentionally works before Pagefind has run.
+        };
+        document.head.appendChild(script);
+      })();
     </script>
   </body>
 </html>
