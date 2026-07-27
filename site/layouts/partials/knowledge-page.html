@@ -1,0 +1,63 @@
+<article>
+  <header>
+    <h1>{{ .Title | default (.File.ContentBaseName | humanize) }}</h1>
+    {{ with .Description }}<p class="description">{{ . }}</p>{{ end }}
+    <dl class="metadata">
+      {{ if ne .File.ContentBaseName "log" }}
+        <div><dt>OKF type</dt><dd>{{ .Type }}</dd></div>
+      {{ end }}
+      {{ with .Params.status }}
+        <div><dt>Status</dt><dd>{{ . }}</dd></div>
+      {{ end }}
+      {{ with .Params.stale_after }}
+        <div><dt>Stale after</dt><dd>{{ . }}</dd></div>
+      {{ end }}
+      {{ with .Params.resource }}
+        <div>
+          <dt>Resource</dt>
+          <dd>
+            {{ if or (hasPrefix . "https://") (hasPrefix . "http://") }}
+              <a href="{{ . }}">{{ . }}</a>
+            {{ else }}
+              {{ . }}
+            {{ end }}
+          </dd>
+        </div>
+      {{ end }}
+      {{ with .Params.generated }}
+        <div><dt>Generated</dt><dd><code>{{ . | jsonify }}</code></dd></div>
+      {{ else }}
+        {{ with .Params.timestamp }}
+          <div><dt>Generated (legacy timestamp)</dt><dd>{{ . }}</dd></div>
+        {{ end }}
+      {{ end }}
+      {{ with .Params.verified }}
+        <div><dt>Verified</dt><dd><code>{{ . | jsonify }}</code></dd></div>
+      {{ end }}
+    </dl>
+    {{ with .Params.tags }}
+      <ul class="tags" aria-label="Tags">
+        {{ range . }}<li>{{ . }}</li>{{ end }}
+      </ul>
+    {{ end }}
+    {{ with .Params.sources }}
+      <section class="sources" aria-labelledby="sources-heading">
+        <h2 id="sources-heading">Sources</h2>
+        <ul>
+          {{ range . }}
+            <li>
+              {{ with .title }}{{ . }}: {{ end }}
+              {{ if or (hasPrefix .resource "https://") (hasPrefix .resource "http://") }}
+                <a href="{{ .resource }}">{{ .resource }}</a>
+              {{ else }}
+                {{ .resource }}
+              {{ end }}
+              {{ with .author }} <small>by {{ . }}</small>{{ end }}
+            </li>
+          {{ end }}
+        </ul>
+      </section>
+    {{ end }}
+  </header>
+  <div class="content">{{ .Content }}</div>
+</article>

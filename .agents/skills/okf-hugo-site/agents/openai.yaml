@@ -1,0 +1,4 @@
+interface:
+  display_name: "OKF Hugo Site"
+  short_description: "Build and troubleshoot the static HOKF site"
+  default_prompt: "Use $okf-hugo-site to build or troubleshoot the HOKF Hugo and Pagefind site."

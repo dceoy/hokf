@@ -1,53 +1,110 @@
 # HOKF
 
-HOKF is a Hugo-based Open Knowledge Framework. It keeps knowledge in a
-canonical Open Knowledge Format (OKF) tree and uses Hugo as a thin rendering
-shell for generated views.
+HOKF is a small Hugo-based Open Knowledge Framework. It targets
+[Open Knowledge Format v0.2](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+and publishes canonical Markdown as a searchable static site without a backend,
+database, CMS, or application framework.
 
 ## Architecture
 
-HOKF is built around three boundaries:
-
-- `okf/` is the canonical source tree. Authors and agents should treat this as
-  the source of truth for concepts, logs, and other structured knowledge.
-- `site/` is the Hugo shadow. Its `content/` tree is derived from `okf/` by
-  tooling and should not become the primary editing surface.
-- `.agents/skills/` is the repository-local Agent Skills area for workflows
-  that help maintain, transform, or publish the knowledge base.
-
-The intended flow is OKF-first: write and maintain knowledge in `okf/`, then
-generate Hugo-compatible content and assets into `site/` when adapter tooling is
-introduced. This keeps the knowledge model independent from the presentation
-layer while still allowing Hugo to provide fast static rendering.
-
-## Generate Hugo Content
-
-Generate the Hugo shadow content from the canonical OKF tree with:
-
-```sh
-python tools/okf_hugo_adapter.py --src okf --dst site/content
-```
-
-Use `--check` in CI or review workflows to verify that generated content is up
-to date without modifying `site/content/`.
-
-## Repository Layout
+The repository keeps knowledge and presentation separate:
 
 ```text
-okf/                 Canonical Open Knowledge Format source
-site/                Thin Hugo site shell for rendered/generated views
-tools/               Minimal glue code, including future OKF-to-Hugo adapters
-.agents/skills/      Repository-local Agent Skills
-.github/workflows/   Future CI workflow definitions
+okf/  ── safe YAML adapter ──>  site/content/  ── Hugo ──>  site/public/
+  canonical source                disposable       HTML       Pagefind index
 ```
 
-## Design Principles
+- `okf/` is the source of truth. It contains the reserved bundle `index.md` and
+  `log.md` plus concept documents.
+- `site/content/` is generated Hugo shadow content. It is ignored by Git and
+  may be deleted and rebuilt at any time.
+- `site/layouts/` and `site/assets/` are the thin, theme-free presentation
+  layer.
+- `.agents/skills/` contains focused local workflows for agents.
 
-HOKF should stay small and predictable:
+The adapter parses front matter with safe YAML loading, preserves nested and
+producer-defined metadata, tolerates unknown types, and retains the canonical
+type as Hugo's native content type.
 
-- Keep custom code minimal.
-- Prefer generated Hugo content over hand-maintained `site/content/` files.
-- Avoid adding runtime services, databases, custom CMS layers, vector databases,
-  or heavy theme forks.
-- Add tooling only when it supports the OKF-to-Hugo path or repository
-  maintenance workflows.
+## Quickstart
+
+Prerequisites are Python 3, Hugo 0.163.3 extended, and Node.js 22.22.1. Create
+an isolated Python environment and install the pinned dependencies:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --only-binary=:all: -r requirements.txt
+npm ci --ignore-scripts
+```
+
+Validate and test the canonical bundle:
+
+```sh
+python tools/okf_validate.py --src okf
+python -m unittest discover -s tests -v
+```
+
+Generate, build, and index the site:
+
+```sh
+python tools/okf_hugo_adapter.py --src okf --dst site/content --clean
+hugo --source site --destination public --cleanDestinationDir
+npm run pagefind
+```
+
+For local authoring, generate the shadow content and start Hugo:
+
+```sh
+python tools/okf_hugo_adapter.py --src okf --dst site/content --clean
+hugo server --source site
+```
+
+A plain Hugo preview works before Pagefind runs; the search control reports that
+the index is unavailable. Run the full build and `npm run pagefind` to exercise
+search.
+
+To verify GitHub Pages project-path links locally:
+
+```sh
+hugo --source site --destination public --cleanDestinationDir \
+  --baseURL https://example.github.io/hokf/
+```
+
+## Validation behavior
+
+The validator returns a non-zero status for objective OKF v0.2 conformance
+errors, such as invalid YAML, a missing concept `type`, malformed optional
+metadata, or invalid reserved documents. It reports quality concerns such as
+broken links, stale or orphaned concepts, inconsistent tags, missing recommended
+metadata, duplicates, and legacy `timestamp` as warnings without failing.
+
+Use a deliberate quality gate when needed:
+
+```sh
+python tools/okf_validate.py --src okf --warnings-as-errors
+```
+
+## Repository Agent Skills
+
+- `okf-author` creates and updates canonical OKF v0.2 concepts.
+- `okf-curator` maintains indexes, logs, links, lifecycle, and bundle quality.
+- `okf-hugo-site` builds and troubleshoots Hugo, Pagefind, and Pages.
+- `okf-pr-review` reviews OKF, tooling, presentation, dependency, and workflow
+  changes.
+
+Validate the skills with the pinned reference CLI:
+
+```sh
+npx --yes skills-ref@0.1.5 validate .agents/skills/okf-author
+npx --yes skills-ref@0.1.5 validate .agents/skills/okf-curator
+npx --yes skills-ref@0.1.5 validate .agents/skills/okf-hugo-site
+npx --yes skills-ref@0.1.5 validate .agents/skills/okf-pr-review
+```
+
+## Publishing
+
+`.github/workflows/pages.yml` validates, tests, generates, builds, and indexes
+on pull requests and default-branch pushes. Only a successful push to `main`
+uploads and deploys the static artifact through a separate least-privilege
+GitHub Pages job.

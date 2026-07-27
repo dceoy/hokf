@@ -1,0 +1,114 @@
+name: Validate, build, and deploy Pages
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    env:
+      HUGO_VERSION: "0.163.3"
+      HUGO_SHA256: "1234302ece1167cef2c252aaa69c89b4f0afc5851f1a30536d693e8e7fc4d1bf"
+      PYTHON_VERSION: "3.13.5"
+      NODE_VERSION: "22.22.1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure GitHub Pages
+        id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install Python dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          --only-binary=:all: -r requirements.txt
+
+      - name: Validate OKF v0.2 bundle
+        run: python tools/okf_validate.py --src okf
+
+      - name: Run Python tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Generate disposable Hugo content
+        run: python tools/okf_hugo_adapter.py --src okf --dst site/content --clean
+
+      - name: Install pinned Hugo
+        env:
+          HUGO_ARCHIVE: hugo_extended_${{ env.HUGO_VERSION }}_linux-amd64.tar.gz
+        run: |
+          curl --fail --location --silent --show-error \
+            --output "${RUNNER_TEMP}/${HUGO_ARCHIVE}" \
+            "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/${HUGO_ARCHIVE}"
+          (
+            cd "${RUNNER_TEMP}"
+            echo "${HUGO_SHA256}  ${HUGO_ARCHIVE}" | sha256sum --check
+          )
+          mkdir "${RUNNER_TEMP}/hugo"
+          tar --extract --gzip --file "${RUNNER_TEMP}/${HUGO_ARCHIVE}" \
+            --directory "${RUNNER_TEMP}/hugo" hugo
+          echo "${RUNNER_TEMP}/hugo" >> "${GITHUB_PATH}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install pinned Pagefind
+        run: npm ci --ignore-scripts
+
+      - name: Build Hugo site
+        run: |
+          hugo --source site --destination public --minify --cleanDestinationDir \
+            --baseURL "${{ steps.pages.outputs.base_url }}/"
+
+      - name: Generate Pagefind index
+        run: npm run pagefind
+
+      - name: Assert static site output
+        run: |
+          test -f site/public/index.html
+          test -f site/public/concepts/architecture/index.html
+          test -f site/public/pagefind/pagefind-ui.js
+          test -f site/public/pagefind/pagefind-ui.css
+          grep --fixed-strings "HOKF architecture" site/public/concepts/architecture/index.html
+          grep --fixed-strings "concepts/architecture/" site/public/index.html
+
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/public
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

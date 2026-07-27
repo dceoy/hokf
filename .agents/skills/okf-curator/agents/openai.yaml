@@ -1,0 +1,4 @@
+interface:
+  display_name: "OKF Curator"
+  short_description: "Curate and validate the HOKF bundle"
+  default_prompt: "Use $okf-curator to improve the quality of the canonical HOKF bundle."

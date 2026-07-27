@@ -1,0 +1,4 @@
+interface:
+  display_name: "OKF PR Review"
+  short_description: "Review HOKF changes and architecture boundaries"
+  default_prompt: "Use $okf-pr-review to review this HOKF change for conformance and regressions."

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Hugo content from canonical OKF Markdown."""
+"""Generate disposable Hugo content from a canonical OKF v0.2 bundle."""
 
 from __future__ import annotations
 
@@ -10,27 +10,26 @@ import re
 import shutil
 import sys
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Any
+
+try:
+    from tools.okf_common import (
+        FrontMatterError,
+        OkfDocument,
+        dump_front_matter,
+        read_documents,
+    )
+except ModuleNotFoundError:
+    from okf_common import (  # type: ignore[no-redef]
+        FrontMatterError,
+        OkfDocument,
+        dump_front_matter,
+        read_documents,
+    )
 
 
-FRONT_MATTER_DELIMITER = "---"
 MARKDOWN_LINK_RE = re.compile(r"(!?\[[^\]]*\])\(([^)\s]+)(\s+\"[^\"]*\")?\)")
-TOP_LEVEL_YAML_KEY_RE = re.compile(r"^([A-Za-z0-9_-]+):(.*)$")
-
-
-@dataclass(frozen=True)
-class FrontMatterEntry:
-    key: str
-    lines: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class OkfDocument:
-    source_path: Path
-    relative_path: PurePosixPath
-    front_matter: tuple[FrontMatterEntry, ...]
-    body: str
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,14 +41,19 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"source directory does not exist: {src}")
     if src == dst or src in dst.parents or dst in src.parents:
         raise SystemExit("source and destination directories must not overlap")
+    if dst == Path(dst.anchor):
+        raise SystemExit("destination must not be a filesystem root")
 
-    if args.check:
-        return check_generated_content(src, dst)
+    try:
+        if args.check:
+            return check_generated_content(src, dst)
+        if args.clean:
+            clean_destination(dst)
+        generated = generate_content(src, dst)
+    except FrontMatterError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
 
-    if args.clean:
-        clean_destination(dst)
-
-    generated = generate_content(src, dst)
     print(f"generated {generated} file(s) from {src} to {dst}")
     return 0
 
@@ -63,7 +67,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="verify generated output without changing the destination",
+        help="compare the destination with freshly generated output",
     )
     parser.add_argument(
         "--clean",
@@ -77,7 +81,7 @@ def check_generated_content(src: Path, dst: Path) -> int:
     with tempfile.TemporaryDirectory(prefix="okf-hugo-check-") as tmp:
         expected_dst = Path(tmp) / "content"
         generate_content(src, expected_dst)
-        comparison = filecmp.dircmp(expected_dst, dst, ignore=[".gitkeep"])
+        comparison = filecmp.dircmp(expected_dst, dst)
         differences = collect_directory_differences(comparison)
 
     if differences:
@@ -92,136 +96,38 @@ def check_generated_content(src: Path, dst: Path) -> int:
 def generate_content(src: Path, dst: Path) -> int:
     documents = read_documents(src)
     okf_paths = {document.relative_path for document in documents}
-    generated_count = 0
+    dst.mkdir(parents=True, exist_ok=True)
+    resolved_dst = dst.resolve()
 
     for document in documents:
         output_path = dst / output_relative_path(document.relative_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(render_document(document, okf_paths), encoding="utf-8")
-        generated_count += 1
-
-    return generated_count
-
-
-def read_documents(src: Path) -> list[OkfDocument]:
-    documents = []
-    for source_path in sorted(src.rglob("*.md")):
-        relative_path = PurePosixPath(source_path.relative_to(src).as_posix())
-        front_matter, body = split_front_matter(source_path.read_text(encoding="utf-8"))
-        documents.append(
-            OkfDocument(
-                source_path=source_path,
-                relative_path=relative_path,
-                front_matter=front_matter,
-                body=body,
+        if (
+            not output_path.parent.resolve().is_relative_to(resolved_dst)
+            or output_path.is_symlink()
+        ):
+            raise FrontMatterError(
+                f"destination path escapes through a symbolic link: {output_path}"
             )
-        )
-    return documents
+        output_path.write_text(render_document(document, okf_paths), encoding="utf-8")
+
+    return len(documents)
 
 
-def split_front_matter(markdown: str) -> tuple[tuple[FrontMatterEntry, ...], str]:
-    lines = markdown.splitlines(keepends=True)
-    if not lines or lines[0].strip() != FRONT_MATTER_DELIMITER:
-        return (), markdown
-
-    for index, line in enumerate(lines[1:], start=1):
-        if line.strip() in {FRONT_MATTER_DELIMITER, "..."}:
-            front_matter_lines = lines[1:index]
-            body = "".join(lines[index + 1 :])
-            return parse_front_matter_entries(front_matter_lines), body
-
-    return (), markdown
-
-
-def parse_front_matter_entries(lines: list[str]) -> tuple[FrontMatterEntry, ...]:
-    entries: list[FrontMatterEntry] = []
-    current_key: str | None = None
-    current_lines: list[str] = []
-
-    for line in lines:
-        match = TOP_LEVEL_YAML_KEY_RE.match(line)
-        if match and not line.startswith((" ", "\t")):
-            if current_key is not None:
-                entries.append(
-                    FrontMatterEntry(current_key, tuple(current_lines))
-                )
-            current_key = match.group(1)
-            current_lines = [line]
-            continue
-
-        if current_key is None:
-            current_key = ""
-        current_lines.append(line)
-
-    if current_key is not None:
-        entries.append(FrontMatterEntry(current_key, tuple(current_lines)))
-
-    return tuple(entries)
-
-
-def render_document(document: OkfDocument, okf_paths: set[PurePosixPath]) -> str:
-    front_matter = render_front_matter(document.front_matter)
+def render_document(
+    document: OkfDocument, okf_paths: set[PurePosixPath]
+) -> str:
+    metadata = hugo_metadata(document)
     body = rewrite_markdown_links(document.relative_path, document.body, okf_paths)
-    rendered = f"{front_matter}\n{body}"
-    if not rendered.endswith("\n"):
-        rendered += "\n"
-    return rendered
+    rendered = f"{dump_front_matter(metadata)}\n{body}"
+    return rendered if rendered.endswith("\n") else f"{rendered}\n"
 
 
-def render_front_matter(entries: tuple[FrontMatterEntry, ...]) -> str:
-    okf_type = extract_okf_type(entries)
-    rendered_entries: list[str] = ["type: knowledge\n"]
-    has_params = False
-
-    for entry in entries:
-        if entry.key == "type":
-            continue
-        if entry.key == "params":
-            has_params = True
-            rendered_entries.extend(merge_okf_type_into_params(entry, okf_type))
-            continue
-        rendered_entries.extend(entry.lines)
-
-    if okf_type and not has_params:
-        rendered_entries.extend(["params:\n", f"  okf_type: {okf_type}\n"])
-
-    return (
-        FRONT_MATTER_DELIMITER
-        + "\n"
-        + "".join(rendered_entries).rstrip()
-        + "\n"
-        + FRONT_MATTER_DELIMITER
-        + "\n"
-    )
-
-
-def extract_okf_type(entries: tuple[FrontMatterEntry, ...]) -> str | None:
-    for entry in entries:
-        if entry.key != "type" or not entry.lines:
-            continue
-        match = TOP_LEVEL_YAML_KEY_RE.match(entry.lines[0])
-        if not match:
-            continue
-        value = match.group(2).strip()
-        return value or None
-    return None
-
-
-def merge_okf_type_into_params(
-    entry: FrontMatterEntry, okf_type: str | None
-) -> tuple[str, ...]:
-    if okf_type is None:
-        return entry.lines
-
-    lines = list(entry.lines)
-    if len(lines) == 1 and lines[0].strip() == "params:":
-        return tuple([lines[0], f"  okf_type: {okf_type}\n"])
-
-    for line in lines[1:]:
-        if re.match(r"^\s+okf_type:", line):
-            return tuple(lines)
-
-    return tuple([lines[0], f"  okf_type: {okf_type}\n", *lines[1:]])
+def hugo_metadata(document: OkfDocument) -> dict[str, Any]:
+    source_metadata = dict(document.metadata or {})
+    if document.is_reserved:
+        return {"type": "knowledge", **source_metadata}
+    return source_metadata
 
 
 def rewrite_markdown_links(
@@ -251,7 +157,10 @@ def rewrite_link_target(
     if not link_path.endswith(".md"):
         return target
 
-    resolved = normalize_posix_path(source_relative_path.parent / link_path)
+    if link_path.startswith("/"):
+        resolved = normalize_posix_path(PurePosixPath(link_path.lstrip("/")))
+    else:
+        resolved = normalize_posix_path(source_relative_path.parent / link_path)
     if resolved not in okf_paths:
         return target
 
@@ -261,7 +170,7 @@ def rewrite_link_target(
 def is_external_or_special_link(target: str) -> bool:
     return (
         "://" in target
-        or target.startswith(("#", "/", "mailto:", "tel:"))
+        or target.startswith(("#", "mailto:", "tel:", "{{"))
         or target.startswith("<")
     )
 
@@ -303,7 +212,9 @@ def clean_destination(dst: Path) -> None:
     if not dst.exists():
         return
     for child in dst.iterdir():
-        if child.is_dir():
+        if child.is_symlink():
+            child.unlink()
+        elif child.is_dir():
             shutil.rmtree(child)
         else:
             child.unlink()

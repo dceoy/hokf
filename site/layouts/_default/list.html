@@ -1,0 +1,20 @@
+{{ define "main" }}
+  <article>
+    <h1>{{ .Title | default (.Section | humanize) }}</h1>
+    {{ with .Description }}<p class="description">{{ . }}</p>{{ end }}
+    {{ .Content }}
+  </article>
+  {{ with .RegularPages }}
+    <section aria-labelledby="pages-heading">
+      <h2 id="pages-heading">Knowledge</h2>
+      <ul class="page-list">
+        {{ range .ByTitle }}
+          <li>
+            <a href="{{ .RelPermalink }}">{{ .Title | default (.File.ContentBaseName | humanize) }}</a>
+            {{ with .Description }} — {{ . }}{{ end }}
+          </li>
+        {{ end }}
+      </ul>
+    </section>
+  {{ end }}
+{{ end }}

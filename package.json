@@ -1,0 +1,12 @@
+{
+  "name": "hokf-static-search",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pinned static search tooling for the HOKF Hugo site.",
+  "scripts": {
+    "pagefind": "pagefind --site site/public"
+  },
+  "devDependencies": {
+    "pagefind": "1.5.2"
+  }
+}

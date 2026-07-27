@@ -1,0 +1,4 @@
+interface:
+  display_name: "OKF Author"
+  short_description: "Author canonical OKF v0.2 concepts"
+  default_prompt: "Use $okf-author to create or update a canonical HOKF concept."
