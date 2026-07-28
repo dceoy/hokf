@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import filecmp
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -9,13 +13,41 @@ from pathlib import Path
 import yaml
 
 from tools.okf_common import FrontMatterError, split_front_matter
-from tools.okf_hugo_adapter import check_generated_content, generate_content, main
+from tools.okf_hugo_adapter import (
+    check_generated_content,
+    collect_directory_differences,
+    generate_content,
+    main,
+)
+
+
+SITE_DIR = Path(__file__).resolve().parents[1] / "site"
 
 
 def load_generated(path: Path) -> tuple[dict[str, object], str]:
     metadata, body, present = split_front_matter(path.read_text(encoding="utf-8"))
     assert present and metadata is not None
     return metadata, body
+
+
+def build_with_real_hugo(src: Path) -> Path:
+    """Generate Hugo content from src and build it with the real hugo binary.
+
+    Returns the public/ directory produced by the build.
+    """
+    root = Path(tempfile.mkdtemp())
+    generate_content(src, root / "content")
+    shutil.copytree(SITE_DIR / "layouts", root / "layouts")
+    shutil.copytree(SITE_DIR / "assets", root / "assets")
+    shutil.copy(SITE_DIR / "hugo.toml", root / "hugo.toml")
+    public = root / "public"
+    subprocess.run(
+        ["hugo", "--source", str(root), "--destination", str(public)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return public
 
 
 class OkfHugoAdapterTest(unittest.TestCase):
@@ -118,6 +150,35 @@ class OkfHugoAdapterTest(unittest.TestCase):
 
             self.assertEqual(check_generated_content(src, dst), 0)
 
+    def test_deep_comparison_catches_content_differing_files_with_same_stat(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = Path(tmp) / "expected"
+            actual = Path(tmp) / "actual"
+            expected.mkdir()
+            actual.mkdir()
+            (expected / "_index.md").write_bytes(b"---\ntype: knowledge\n---\nAAAA\n")
+            (actual / "_index.md").write_bytes(b"---\ntype: knowledge\n---\nBBBB\n")
+
+            # Equal size and an identical forced mtime give both files the
+            # same os.stat() signature despite differing bytes, which is
+            # exactly what a shallow (default) filecmp.dircmp misses.
+            fixed_mtime = 1_700_000_000.0
+            os.utime(expected / "_index.md", (fixed_mtime, fixed_mtime))
+            os.utime(actual / "_index.md", (fixed_mtime, fixed_mtime))
+
+            shallow_comparison = filecmp.dircmp(expected, actual)
+            self.assertEqual(
+                collect_directory_differences(shallow_comparison), []
+            )
+
+            deep_comparison = filecmp.dircmp(expected, actual, shallow=False)
+            self.assertEqual(
+                collect_directory_differences(deep_comparison),
+                ["content differs: _index.md"],
+            )
+
     def test_check_reports_missing_destination_before_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -186,13 +247,26 @@ class OkfHugoAdapterTest(unittest.TestCase):
 
     def test_front_matter_preserves_legacy_yaml_scalars(self) -> None:
         metadata, _, present = split_front_matter(
-            "---\non: keep\nanswer: yes\nflag: true\n---\nBody\n"
+            "---\n"
+            "on: keep\n"
+            "answer: yes\n"
+            "flag: true\n"
+            "code: 0123\n"
+            "ratio: 12:34\n"
+            "---\nBody\n"
         )
 
         self.assertTrue(present)
         self.assertEqual(metadata["on"], "keep")
         self.assertEqual(metadata["answer"], "yes")
         self.assertIs(metadata["flag"], True)
+        # YAML 1.2 core-schema int is plain decimal, so a leading-zero digit
+        # string is 123, not the YAML-1.1 octal reinterpretation (83).
+        self.assertEqual(metadata["code"], 123)
+        # A colon-separated digit string does not match any core-schema
+        # scalar tag, so it is preserved as a string, not the YAML-1.1
+        # sexagesimal reinterpretation (754).
+        self.assertEqual(metadata["ratio"], "12:34")
 
     def test_front_matter_ignores_indented_delimiter_in_block_scalar(self) -> None:
         metadata, body, present = split_front_matter(
@@ -210,19 +284,34 @@ class OkfHugoAdapterTest(unittest.TestCase):
         self.assertEqual(metadata["note"], "before\n---\nafter\n")
         self.assertEqual(body, "Body\n")
 
-    def test_output_collision_between_index_and_underscore_index(self) -> None:
+    def test_standalone_underscore_index_builds_as_leaf_page_not_section(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             src = root / "okf"
             dst = root / "content"
             src.mkdir()
-            (src / "index.md").write_text("---\ntype: Minimal\n---\n", encoding="utf-8")
-            (src / "_index.md").write_text("---\ntype: Minimal\n---\n", encoding="utf-8")
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "_index.md").write_text(
+                "---\ntype: Minimal\n---\n# Underscore Concept\n", encoding="utf-8"
+            )
 
-            with self.assertRaises(FrontMatterError):
-                generate_content(src, dst)
+            # A root index.md and a standalone _index.md concept no longer
+            # collide: index.md still maps to the root _index.md file, while
+            # _index.md is routed into a same-named directory so Hugo does
+            # not treat it as the section's own branch-bundle page.
+            self.assertEqual(generate_content(src, dst), 2)
+            self.assertTrue((dst / "_index.md").is_file())
+            self.assertTrue((dst / "_index" / "index.md").is_file())
+            _, root_body = load_generated(dst / "_index.md")
+            self.assertIn("# Root", root_body)
+            _, concept_body = load_generated(dst / "_index" / "index.md")
+            self.assertIn("# Underscore Concept", concept_body)
 
-    def test_output_collision_between_nested_index_and_underscore_index(
+    def test_standalone_nested_underscore_index_builds_as_leaf_page(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -231,12 +320,41 @@ class OkfHugoAdapterTest(unittest.TestCase):
             dst = root / "content"
             (src / "concepts").mkdir(parents=True)
             (src / "concepts" / "index.md").write_text(
-                "---\ntype: Minimal\n---\n", encoding="utf-8"
+                "---\ntype: Minimal\n---\n# Concepts\n", encoding="utf-8"
             )
             (src / "concepts" / "_index.md").write_text(
+                "---\ntype: Minimal\n---\n# Nested Underscore Concept\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(generate_content(src, dst), 2)
+            self.assertTrue((dst / "concepts" / "_index.md").is_file())
+            self.assertTrue(
+                (dst / "concepts" / "_index" / "index.md").is_file()
+            )
+            _, concept_body = load_generated(
+                dst / "concepts" / "_index" / "index.md"
+            )
+            self.assertIn("# Nested Underscore Concept", concept_body)
+
+    def test_output_collision_between_underscore_index_and_its_own_directory(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            (src / "_index").mkdir(parents=True)
+            (src / "_index.md").write_text(
+                "---\ntype: Minimal\n---\n", encoding="utf-8"
+            )
+            (src / "_index" / "index.md").write_text(
                 "---\ntype: Minimal\n---\n", encoding="utf-8"
             )
 
+            # Both a standalone `_index.md` and a `_index/index.md` concept
+            # map to the same generated path and public permalink
+            # (`/_index/`); the collision guard must still reject this pair.
             with self.assertRaises(FrontMatterError):
                 generate_content(src, dst)
 
@@ -346,6 +464,67 @@ class OkfHugoAdapterTest(unittest.TestCase):
             self.assertIn("`[child](child.md)`", body)
             self.assertIn("```markdown\n[child](child.md)\n```", body)
             self.assertIn("Real link: [child](/child/)", body)
+
+
+@unittest.skipUnless(shutil.which("hugo"), "hugo binary is not installed")
+class OkfHugoAdapterRealBuildTest(unittest.TestCase):
+    def test_standalone_root_underscore_index_builds_distinct_from_home(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            src.mkdir()
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "_index.md").write_text(
+                "---\ntype: Minimal\n---\n# Underscore Concept\n\n"
+                "Standalone concept body.\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            self.assertTrue((public / "index.html").exists())
+            self.assertIn("Root", (public / "index.html").read_text(encoding="utf-8"))
+            self.assertTrue((public / "_index" / "index.html").exists())
+            self.assertIn(
+                "Standalone concept body",
+                (public / "_index" / "index.html").read_text(encoding="utf-8"),
+            )
+
+    def test_standalone_nested_underscore_index_builds_distinct_from_section(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Concepts\n", encoding="utf-8"
+            )
+            (src / "concepts" / "_index.md").write_text(
+                "---\ntype: Minimal\n---\n# Nested Underscore Concept\n\n"
+                "Nested concept body.\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            self.assertTrue((public / "concepts" / "index.html").exists())
+            self.assertIn(
+                "Concepts",
+                (public / "concepts" / "index.html").read_text(encoding="utf-8"),
+            )
+            self.assertTrue((public / "concepts" / "_index" / "index.html").exists())
+            self.assertIn(
+                "Nested concept body",
+                (public / "concepts" / "_index" / "index.html").read_text(
+                    encoding="utf-8"
+                ),
+            )
 
 
 if __name__ == "__main__":

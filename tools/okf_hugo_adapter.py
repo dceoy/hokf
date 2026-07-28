@@ -116,7 +116,11 @@ def check_generated_content(src: Path, dst: Path) -> int:
     with tempfile.TemporaryDirectory(prefix="okf-hugo-check-") as tmp:
         expected_dst = Path(tmp) / "content"
         generate_content(src, expected_dst)
-        comparison = filecmp.dircmp(expected_dst, dst)
+        # dircmp defaults to shallow=True, comparing os.stat() signatures
+        # (size and mtime) rather than bytes, so an equal-size file with a
+        # matching mtime is classified as identical even when its content
+        # differs. Force a deep, byte-level comparison.
+        comparison = filecmp.dircmp(expected_dst, dst, shallow=False)
         differences = collect_directory_differences(comparison)
 
     if differences:
@@ -270,6 +274,14 @@ def normalize_posix_path(path: PurePosixPath) -> PurePosixPath:
 def output_relative_path(relative_path: PurePosixPath) -> PurePosixPath:
     if relative_path.name == "index.md":
         return relative_path.parent / "_index.md"
+    if relative_path.name == "_index.md":
+        # OKF reserves only index.md and log.md, so a standalone `_index.md`
+        # concept is valid and must not be written to a literal `_index.md`
+        # file: Hugo treats that filename as the section's own branch-bundle
+        # page. Route it into a same-named directory instead, so it lands on
+        # a plain leaf bundle at the path public_url_for_okf_path() already
+        # advertises, rather than silently becoming the section home page.
+        return relative_path.parent / "_index" / "index.md"
     return relative_path
 
 
