@@ -13,7 +13,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 try:
     from tools.okf_common import (
@@ -31,11 +31,6 @@ except ModuleNotFoundError:
     )
 
 
-# Start of a CommonMark inline link or image. The destination and optional
-# title are scanned structurally below because a regular expression cannot
-# distinguish parentheses nested in a bare destination from the link's
-# closing delimiter.
-INLINE_LINK_START_RE = re.compile(r"!?\[[^\]\n]*\]\(")
 # CommonMark link reference definition: `[label]: target "title"`, optionally
 # indented up to 3 spaces, with the target optionally wrapped in `<...>`.
 REFERENCE_DEFINITION_RE = re.compile(
@@ -376,17 +371,69 @@ def unwrap_angle_brackets(target: str) -> str:
     return target
 
 
+def find_inline_link_openers(body: str) -> list[tuple[int, int]]:
+    """Locate `[`/`![` openers whose label is a balanced, single-line
+    CommonMark link/image label immediately followed by "(".
+
+    Nested brackets (`[see [child]](child.md)`) and backslash-escaped
+    delimiters (`[child \\]](child.md)`) inside the label are honored, since a
+    regular expression cannot track bracket depth. Labels do not span a
+    newline, matching this parser's existing single-line scope.
+
+    Returns (label_start, destination_start) pairs, where label_start is the
+    index of the optional "!" or the "[", and destination_start is the index
+    just after the "(" that must immediately follow the closing "]".
+    """
+    openers: list[tuple[int, int]] = []
+    length = len(body)
+    index = 0
+    while index < length:
+        char = body[index]
+        if char == "\\" and index + 1 < length:
+            index += 2
+            continue
+        if char != "[":
+            index += 1
+            continue
+
+        label_start = index - 1 if index > 0 and body[index - 1] == "!" else index
+        depth = 0
+        cursor = index
+        closed_at = -1
+        while cursor < length:
+            inner = body[cursor]
+            if inner == "\\" and cursor + 1 < length:
+                cursor += 2
+                continue
+            if inner == "\n":
+                break
+            if inner == "[":
+                depth += 1
+            elif inner == "]":
+                depth -= 1
+                if depth == 0:
+                    closed_at = cursor
+                    break
+            cursor += 1
+
+        if closed_at != -1 and closed_at + 1 < length and body[closed_at + 1] == "(":
+            openers.append((label_start, closed_at + 2))
+            index = closed_at + 2
+            continue
+        index += 1
+    return openers
+
+
 def iter_inline_links(body: str) -> list[InlineLink]:
     """Parse inline link destinations and titles needed for safe rewriting.
 
-    This intentionally leaves label parsing at the same compact scope as the
-    previous matcher, but scans the destination character by character so
-    balanced parentheses and escaped delimiters are handled consistently with
+    Label boundaries come from find_inline_link_openers(); the destination
+    and optional title are scanned character by character so balanced
+    parentheses and escaped delimiters are handled consistently with
     CommonMark.
     """
     links: list[InlineLink] = []
-    for match in INLINE_LINK_START_RE.finditer(body):
-        cursor = match.end()
+    for label_start, cursor in find_inline_link_openers(body):
         target_start = cursor
 
         if cursor < len(body) and body[cursor] == "<":
@@ -461,9 +508,9 @@ def iter_inline_links(body: str) -> list[InlineLink]:
 
         links.append(
             InlineLink(
-                start=match.start(),
+                start=label_start,
                 end=cursor + 1,
-                label=match.group(0)[:-1],
+                label=body[label_start : target_start - 1],
                 raw_target=body[target_start:target_end],
                 title=title,
             )
@@ -568,7 +615,11 @@ def rewrite_link_target(
     if resolved not in okf_paths:
         return target
 
-    return public_url_for_okf_path(resolved) + suffix
+    # Re-encode the resolved path segments (preserving "/") before appending
+    # the original, still-encoded query/fragment suffix, since a decoded
+    # space, "#", or "?" from the source filename would otherwise land in
+    # the emitted Markdown as an invalid or misinterpreted URL character.
+    return quote(public_url_for_okf_path(resolved), safe="/") + suffix
 
 
 def is_external_or_special_link(target: str) -> bool:

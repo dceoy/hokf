@@ -539,7 +539,7 @@ class OkfHugoAdapterTest(unittest.TestCase):
             generate_content(src, dst)
             _, body = load_generated(dst / "concepts" / "parent.md")
 
-            self.assertIn("Balanced: [child](/concepts/child(v2)/).", body)
+            self.assertIn("Balanced: [child](/concepts/child%28v2%29/).", body)
 
     def test_rewrite_markdown_links_skips_longer_and_multiline_code_spans(
         self,
@@ -798,6 +798,114 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
                 parent_html,
             )
             self.assertNotIn("child%2Emd", parent_html)
+
+    def test_space_in_resolved_path_is_percent_encoded_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "foo bar.md").write_text(
+                "---\ntype: Minimal\n---\n# Foo Bar\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [foo bar](foo%20bar.md).\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(
+                'href="/concepts/foo%20bar/">foo bar</a>', parent_html
+            )
+            self.assertNotIn('href="/concepts/foo bar/"', parent_html)
+
+    def test_hash_in_resolved_path_is_percent_encoded_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "foo#bar.md").write_text(
+                "---\ntype: Minimal\n---\n# Foo Hash Bar\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [foo hash bar](foo%23bar.md).\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(
+                'href="/concepts/foo%23bar/">foo hash bar</a>', parent_html
+            )
+            self.assertNotIn('href="/concepts/foo#bar/"', parent_html)
+
+    def test_nested_bracket_link_label_resolves_in_real_hugo_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [see [child]](child.md).\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">see [child]</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_escaped_bracket_link_label_resolves_in_real_hugo_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [child \\]](child.md).\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">child ]</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
 
     def test_standalone_root_underscore_index_builds_distinct_from_home(
         self,

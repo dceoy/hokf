@@ -197,6 +197,26 @@ class OkfValidateTest(unittest.TestCase):
             self.assertNotIn("index", warning_subjects)
             self.assertIn("link:concepts/missing(v2).md", warning_subjects)
 
+    def test_nested_bracket_link_label_broken_target_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n"
+                "# Concepts\n\n"
+                "[see [missing]](missing.md)\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            warning_subjects = {
+                finding.subject
+                for finding in findings
+                if finding.severity == "WARNING"
+            }
+
+            self.assertIn("link:missing.md", warning_subjects)
+
     def test_link_shaped_text_inside_code_block_is_not_flagged_as_broken(
         self,
     ) -> None:
