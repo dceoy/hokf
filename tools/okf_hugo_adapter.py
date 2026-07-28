@@ -34,11 +34,11 @@ except ModuleNotFoundError:
     )
 
 
-# CommonMark link reference definition: `[label]: target "title"`, optionally
-# indented up to 3 spaces, with the target optionally wrapped in `<...>`.
-REFERENCE_DEFINITION_RE = re.compile(
-    r'^([ \t]{0,3}\[[^\]\n]+\]:[ \t]*)(<[^>\n]*>|\S+)'
-    r'([ \t]+(?:"[^"\n]*"|\'[^\'\n]*\'|\([^)\n]*\)))?[ \t]*(?=\r?$)',
+# CommonMark link reference definition opener, optionally indented up to
+# 3 spaces. Destinations and titles are parsed structurally below because
+# each may be separated from the preceding component by one line ending.
+REFERENCE_DEFINITION_START_RE = re.compile(
+    r"^[ \t]{0,3}\[[^\]\r\n]+\]:",
     re.MULTILINE,
 )
 BACKTICK_RUN_RE = re.compile(r"`+")
@@ -55,6 +55,15 @@ ASCII_PUNCTUATION = frozenset(string.punctuation)
 
 @dataclass(frozen=True)
 class InlineLink:
+    start: int
+    end: int
+    prefix: str
+    raw_target: str
+    suffix: str
+
+
+@dataclass(frozen=True)
+class ReferenceDefinition:
     start: int
     end: int
     prefix: str
@@ -450,6 +459,131 @@ def consume_link_whitespace(body: str, cursor: int) -> int:
     return cursor
 
 
+def consume_spaces_and_tabs(body: str, cursor: int) -> int:
+    while cursor < len(body) and body[cursor] in " \t":
+        cursor += 1
+    return cursor
+
+
+def consume_line_ending(body: str, cursor: int) -> int | None:
+    if cursor >= len(body) or body[cursor] not in "\r\n":
+        return None
+    if body[cursor] == "\r" and cursor + 1 < len(body) and body[cursor + 1] == "\n":
+        return cursor + 2
+    return cursor + 1
+
+
+def consume_link_destination(body: str, cursor: int) -> int | None:
+    """Return the end of a CommonMark link destination, or None if invalid."""
+    start = cursor
+    if cursor < len(body) and body[cursor] == "<":
+        cursor += 1
+        while cursor < len(body):
+            if body[cursor] == "\\" and cursor + 1 < len(body):
+                cursor += 2
+                continue
+            if body[cursor] == ">":
+                return cursor + 1
+            if body[cursor] in "<\r\n":
+                return None
+            cursor += 1
+        return None
+
+    paren_depth = 0
+    while cursor < len(body):
+        char = body[cursor]
+        if char == "\\" and cursor + 1 < len(body):
+            cursor += 2
+            continue
+        if ord(char) < 0x20 or char == "\x7f" or char == " ":
+            break
+        if char == "(":
+            paren_depth += 1
+        elif char == ")":
+            if paren_depth == 0:
+                break
+            paren_depth -= 1
+        cursor += 1
+    if cursor == start or paren_depth != 0:
+        return None
+    return cursor
+
+
+def consume_link_title(body: str, cursor: int) -> int | None:
+    if cursor >= len(body) or body[cursor] not in "\"'(":
+        return None
+    delimiter = body[cursor]
+    closing_delimiter = ")" if delimiter == "(" else delimiter
+    cursor += 1
+    content_start = cursor
+    while cursor < len(body):
+        if body[cursor] == "\\" and cursor + 1 < len(body):
+            cursor += 2
+            continue
+        if body[cursor] == closing_delimiter:
+            if BLANK_LINE_RE.search(body[content_start:cursor]):
+                return None
+            return cursor + 1
+        cursor += 1
+    return None
+
+
+def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
+    """Parse CommonMark link reference definitions used by the adapter.
+
+    The destination may start on the line after the label/colon, and an
+    optional title may start on the line after the destination. Exact source
+    whitespace is retained in prefix/suffix so rewriting changes only the
+    destination.
+    """
+    definitions: list[ReferenceDefinition] = []
+    for match in REFERENCE_DEFINITION_START_RE.finditer(body):
+        cursor = consume_spaces_and_tabs(body, match.end())
+        next_line = consume_line_ending(body, cursor)
+        if next_line is not None:
+            cursor = consume_spaces_and_tabs(body, next_line)
+
+        target_start = cursor
+        target_end = consume_link_destination(body, cursor)
+        if target_end is None:
+            continue
+
+        same_line_end = consume_spaces_and_tabs(body, target_end)
+        title_start = same_line_end
+        title_end = (
+            consume_link_title(body, title_start)
+            if same_line_end > target_end
+            else None
+        )
+
+        if title_end is None:
+            next_line = consume_line_ending(body, same_line_end)
+            if next_line is not None:
+                candidate = consume_spaces_and_tabs(body, next_line)
+                title_start = candidate
+                title_end = consume_link_title(body, candidate)
+
+        if title_end is not None:
+            end = consume_spaces_and_tabs(body, title_end)
+            if end < len(body) and body[end] not in "\r\n":
+                continue
+        else:
+            end = same_line_end
+            if end < len(body) and body[end] not in "\r\n":
+                continue
+
+        definitions.append(
+            ReferenceDefinition(
+                start=match.start(),
+                end=end,
+                prefix=body[match.start():target_start],
+                raw_target=body[target_start:target_end],
+                suffix=body[target_end:end],
+            )
+        )
+    return definitions
+
+
 def iter_inline_links(body: str) -> list[InlineLink]:
     """Parse inline link destinations and titles needed for safe rewriting.
 
@@ -463,72 +597,18 @@ def iter_inline_links(body: str) -> list[InlineLink]:
     for label_start, cursor in find_inline_link_openers(body):
         cursor = consume_link_whitespace(body, cursor)
         target_start = cursor
-
-        if cursor < len(body) and body[cursor] == "<":
-            cursor += 1
-            while cursor < len(body):
-                if body[cursor] == "\\" and cursor + 1 < len(body):
-                    cursor += 2
-                    continue
-                if body[cursor] == ">":
-                    cursor += 1
-                    break
-                if body[cursor] in "<\r\n":
-                    break
-                cursor += 1
-            else:
-                continue
-            if body[cursor - 1] != ">":
-                continue
-        else:
-            paren_depth = 0
-            while cursor < len(body):
-                char = body[cursor]
-                if char == "\\" and cursor + 1 < len(body):
-                    cursor += 2
-                    continue
-                if (
-                    ord(char) < 0x20
-                    or char == "\x7f"
-                    or (char == " " and paren_depth == 0)
-                ):
-                    break
-                if char == "(":
-                    paren_depth += 1
-                elif char == ")":
-                    if paren_depth == 0:
-                        break
-                    paren_depth -= 1
-                cursor += 1
-            if paren_depth != 0:
-                continue
-
-        target_end = cursor
+        target_end = consume_link_destination(body, cursor)
+        if target_end is None:
+            continue
+        cursor = target_end
         whitespace_start = cursor
         cursor = consume_link_whitespace(body, cursor)
 
         if cursor > whitespace_start and cursor < len(body) and body[cursor] != ")":
-            delimiter = body[cursor]
-            if delimiter not in "\"'(":
+            title_end = consume_link_title(body, cursor)
+            if title_end is None:
                 continue
-            closing_delimiter = ")" if delimiter == "(" else delimiter
-            cursor += 1
-            title_content_start = cursor
-            while cursor < len(body):
-                if body[cursor] == "\\" and cursor + 1 < len(body):
-                    cursor += 2
-                    continue
-                if body[cursor] == closing_delimiter:
-                    cursor += 1
-                    break
-                cursor += 1
-            else:
-                continue
-            if body[cursor - 1] != closing_delimiter:
-                continue
-            title_content = body[title_content_start : cursor - 1]
-            if BLANK_LINE_RE.search(title_content):
-                continue
+            cursor = title_end
             cursor = consume_link_whitespace(body, cursor)
 
         if cursor >= len(body) or body[cursor] != ")":
@@ -557,12 +637,12 @@ def iter_link_targets(body: str) -> list[str]:
     def in_code(start: int, end: int) -> bool:
         return any(start < c_end and end > c_start for c_start, c_end in code_spans)
 
-    reference_matches = list(REFERENCE_DEFINITION_RE.finditer(body))
+    reference_definitions = iter_reference_definitions(body)
 
     def in_reference_definition(start: int, end: int) -> bool:
         return any(
-            start < match.end() and end > match.start()
-            for match in reference_matches
+            start < definition.end and end > definition.start
+            for definition in reference_definitions
         )
 
     targets = [
@@ -572,9 +652,9 @@ def iter_link_targets(body: str) -> list[str]:
         and not in_reference_definition(link.start, link.end)
     ]
     targets.extend(
-        unwrap_angle_brackets(match.group(2))
-        for match in reference_matches
-        if not in_code(match.start(), match.end())
+        unwrap_angle_brackets(definition.raw_target)
+        for definition in reference_definitions
+        if not in_code(definition.start, definition.end)
     )
     return targets
 
@@ -589,12 +669,12 @@ def rewrite_markdown_links(
     def in_code(start: int, end: int) -> bool:
         return any(start < c_end and end > c_start for c_start, c_end in code_spans)
 
-    reference_matches = list(REFERENCE_DEFINITION_RE.finditer(body))
+    reference_definitions = iter_reference_definitions(body)
 
     def in_reference_definition(start: int, end: int) -> bool:
         return any(
-            start < match.end() and end > match.start()
-            for match in reference_matches
+            start < definition.end and end > definition.start
+            for definition in reference_definitions
         )
 
     def rewritten_replacement(
@@ -621,15 +701,17 @@ def rewrite_markdown_links(
         if replacement is not None:
             replacements.append((link.start, link.end, replacement))
 
-    for match in reference_matches:
-        if in_code(match.start(), match.end()):
+    for definition in reference_definitions:
+        if in_code(definition.start, definition.end):
             continue
-        prefix, raw_target, title = match.groups()
         replacement = rewritten_replacement(
-            raw_target, lambda new_target: f"{prefix}{new_target}{title or ''}"
+            definition.raw_target,
+            lambda new_target: (
+                f"{definition.prefix}{new_target}{definition.suffix}"
+            ),
         )
         if replacement is not None:
-            replacements.append((match.start(), match.end(), replacement))
+            replacements.append((definition.start, definition.end, replacement))
 
     replacements.sort(key=lambda item: item[0])
     segments: list[str] = []

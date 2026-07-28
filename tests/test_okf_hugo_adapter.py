@@ -79,6 +79,7 @@ class OkfHugoAdapterTest(unittest.TestCase):
                 "stale_after: 2027-01-01\n"
                 "producer_extension:\n"
                 "  nested: [one, {two: 2}]\n"
+                "  code: 0123\n"
                 "okf_type: producer-owned-value\n"
                 "---\n"
                 "# Alpha\n\nSee [the root](/index.md).\n",
@@ -98,7 +99,7 @@ class OkfHugoAdapterTest(unittest.TestCase):
             self.assertEqual(okf_params["okf_type"], "producer-owned-value")
             self.assertEqual(
                 okf_params["producer_extension"],
-                {"nested": ["one", {"two": 2}]},
+                {"nested": ["one", {"two": 2}], "code": "0123"},
             )
             self.assertEqual(
                 okf_params["sources"][0]["signals"],
@@ -273,6 +274,7 @@ class OkfHugoAdapterTest(unittest.TestCase):
             "answer: yes\n"
             "flag: true\n"
             "code: 0123\n"
+            "negative_code: -0123\n"
             "ratio: 12:34\n"
             "---\nBody\n"
         )
@@ -281,9 +283,10 @@ class OkfHugoAdapterTest(unittest.TestCase):
         self.assertEqual(metadata["on"], "keep")
         self.assertEqual(metadata["answer"], "yes")
         self.assertIs(metadata["flag"], True)
-        # YAML 1.2 core-schema int is plain decimal, so a leading-zero digit
-        # string is 123, not the YAML-1.1 octal reinterpretation (83).
-        self.assertEqual(metadata["code"], 123)
+        # YAML 1.2 core-schema decimal integers are either zero or begin with
+        # a non-zero digit, so a multi-digit leading-zero value stays a string.
+        self.assertEqual(metadata["code"], "0123")
+        self.assertEqual(metadata["negative_code"], "-0123")
         # A colon-separated digit string does not match any core-schema
         # scalar tag, so it is preserved as a string, not the YAML-1.1
         # sexagesimal reinterpretation (754).
@@ -508,8 +511,12 @@ class OkfHugoAdapterTest(unittest.TestCase):
                 "---\ntype: Minimal\n---\n"
                 "# Parent\n\n"
                 "See [the child][child-ref] and [the root][root-ref].\n\n"
-                "[child-ref]: child.md\n"
-                "[root-ref]: <../index.md> \"Root\"\n",
+                "[child-ref]:\n"
+                "  child.md\n"
+                '  "Child"\n'
+                "[root-ref]:\n"
+                "  <../index.md>\n"
+                '  "Root"\n',
                 encoding="utf-8",
             )
             (src / "index.md").write_text("---\ntype: Minimal\n---\n# Root\n", encoding="utf-8")
@@ -517,8 +524,8 @@ class OkfHugoAdapterTest(unittest.TestCase):
             generate_content(src, dst)
             _, body = load_generated(dst / "concepts" / "parent.md")
 
-            self.assertIn("[child-ref]: /concepts/child/", body)
-            self.assertIn("[root-ref]: </> \"Root\"", body)
+            self.assertIn('[child-ref]:\n  /concepts/child/\n  "Child"', body)
+            self.assertIn('[root-ref]:\n  </>\n  "Root"', body)
 
     def test_reference_definition_title_is_not_rewritten_as_inline_link(
         self,
@@ -884,6 +891,39 @@ class OkfHugoAdapterTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("hugo"), "hugo binary is not installed")
 class OkfHugoAdapterRealBuildTest(unittest.TestCase):
+    def test_multiline_reference_definition_resolves_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [the child][child-ref].\n\n"
+                "[child-ref]:\n"
+                "  child.md\n"
+                '  "Child title"\n',
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(
+                'href="/concepts/child/" title="Child title">the child</a>',
+                parent_html,
+            )
+            self.assertNotIn('href="child.md"', parent_html)
+
     def test_balanced_parenthesis_link_resolves_in_real_hugo_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "okf"

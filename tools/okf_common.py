@@ -45,13 +45,14 @@ _ProducerSafeLoader.add_implicit_resolver(
 )
 _ProducerSafeLoader.add_implicit_resolver(
     "tag:yaml.org,2002:int",
-    re.compile(r"^(?:[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+)$"),
+    re.compile(r"^(?:[-+]?(?:0|[1-9][0-9]*)|0o[0-7]+|0x[0-9a-fA-F]+)$"),
     list("-+0123456789"),
 )
 _ProducerSafeLoader.add_implicit_resolver(
     "tag:yaml.org,2002:float",
     re.compile(
-        r"^(?:[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?"
+        r"^(?:[-+]?(?:(?:\.[0-9]+|[0-9]+\.[0-9]*)(?:[eE][-+]?[0-9]+)?"
+        r"|[0-9]+[eE][-+]?[0-9]+)"
         r"|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$"
     ),
     list("-+0123456789."),
@@ -60,8 +61,8 @@ _ProducerSafeLoader.add_implicit_resolver(
 
 def _construct_core_schema_int(loader: yaml.SafeLoader, node: yaml.Node) -> int:
     # SafeConstructor.construct_yaml_int applies YAML 1.1 value semantics
-    # (a leading-zero decimal string is read as octal, a colon-separated
-    # string as sexagesimal) regardless of which tag the resolver assigned.
+    # (including octal and sexagesimal forms) regardless of which tag the
+    # resolver assigned.
     # Reimplement construction for the YAML 1.2 core-schema int forms the
     # resolver above actually matches: plain decimal, and explicit 0o/0x.
     value = loader.construct_scalar(node)

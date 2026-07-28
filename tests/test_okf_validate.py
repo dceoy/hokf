@@ -149,7 +149,9 @@ class OkfValidateTest(unittest.TestCase):
                 "---\nokf_version: \"0.2\"\n---\n"
                 "# Concepts\n\n"
                 "See [Alpha][alpha-ref].\n\n"
-                "[alpha-ref]: concepts/alpha.md\n"
+                "[alpha-ref]:\n"
+                "  concepts/alpha.md\n"
+                '  "Alpha"\n'
                 "[missing-ref]: concepts/missing.md\n",
                 encoding="utf-8",
             )
