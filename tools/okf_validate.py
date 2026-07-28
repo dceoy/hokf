@@ -588,7 +588,8 @@ def validate_links(
     for target in iter_link_targets(document.body):
         if target.startswith(("http://", "https://", "mailto:", "tel:", "#", "{{")):
             continue
-        link_path, _ = split_link_suffix(unquote(target))
+        raw_link_path, _ = split_link_suffix(target)
+        link_path = unquote(raw_link_path)
         if not link_path:
             continue
         resolved = resolve_link_path(document.relative_path, link_path)
@@ -611,7 +612,8 @@ def resolve_document_links(
     for target in iter_link_targets(document.body):
         if target.startswith(("http://", "https://", "mailto:", "tel:", "#", "{{")):
             continue
-        link_path, _ = split_link_suffix(unquote(target))
+        raw_link_path, _ = split_link_suffix(target)
+        link_path = unquote(raw_link_path)
         resolved = resolve_link_path(document.relative_path, link_path)
         if resolved in paths:
             resolved_paths.add(resolved)

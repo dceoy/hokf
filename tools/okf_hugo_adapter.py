@@ -10,8 +10,10 @@ import re
 import shutil
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
+from urllib.parse import unquote
 
 try:
     from tools.okf_common import (
@@ -29,13 +31,11 @@ except ModuleNotFoundError:
     )
 
 
-# CommonMark inline link: destination is either a bare run of non-whitespace,
-# non-paren characters or a `<...>`-wrapped form, and the optional title may
-# use double quotes, single quotes, or parentheses.
-MARKDOWN_LINK_RE = re.compile(
-    r'(!?\[[^\]]*\])\((<[^<>\n]*>|[^\s()]*)'
-    r'(\s+"[^"\n]*"|\s+\'[^\'\n]*\'|\s+\([^()\n]*\))?\)'
-)
+# Start of a CommonMark inline link or image. The destination and optional
+# title are scanned structurally below because a regular expression cannot
+# distinguish parentheses nested in a bare destination from the link's
+# closing delimiter.
+INLINE_LINK_START_RE = re.compile(r"!?\[[^\]\n]*\]\(")
 # CommonMark link reference definition: `[label]: target "title"`, optionally
 # indented up to 3 spaces, with the target optionally wrapped in `<...>`.
 REFERENCE_DEFINITION_RE = re.compile(
@@ -43,10 +43,20 @@ REFERENCE_DEFINITION_RE = re.compile(
     r'([ \t]+(?:"[^"\n]*"|\'[^\'\n]*\'|\([^)\n]*\)))?[ \t]*$',
     re.MULTILINE,
 )
-INLINE_CODE_SPAN_RE = re.compile(r"`[^`\n]+`")
+BACKTICK_RUN_RE = re.compile(r"`+")
+INLINE_BLOCK_BREAK_RE = re.compile(r"\r?\n[ \t]*\r?\n")
 FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 INDENTED_LINE_RE = re.compile(r"^(?: {4}|\t)")
 LIST_MARKER_RE = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
+
+
+@dataclass(frozen=True)
+class InlineLink:
+    start: int
+    end: int
+    label: str
+    raw_target: str
+    title: str
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -235,13 +245,14 @@ def hugo_metadata(document: OkfDocument) -> dict[str, Any]:
 
 
 def find_code_spans(body: str) -> list[tuple[int, int]]:
-    """Return merged (start, end) byte spans of Markdown code regions.
+    """Return merged (start, end) character spans of Markdown code regions.
 
     Covers fenced code blocks (opening fence indented up to 3 spaces, a
     closing fence of the same character with at least as many markers),
-    indented code blocks, and inline code spans, so link rewriting can skip
-    all of them. Indented-code detection intentionally backs off when the
-    line before the blank-line gap looks like a list marker, since indented
+    indented code blocks, and inline code spans delimited by equal-length
+    backtick runs (including multiline spans), so link rewriting can skip all
+    of them. Indented-code detection intentionally backs off when the line
+    before the blank-line gap looks like a list marker, since indented
     continuation of a list item is not a code block.
     """
     spans: list[tuple[int, int]] = []
@@ -307,8 +318,47 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
         prev_blank = text.strip() == ""
         i += 1
 
-    for match in INLINE_CODE_SPAN_RE.finditer(body):
-        spans.append((match.start(), match.end()))
+    block_spans = list(spans)
+
+    def in_block(start: int, end: int) -> bool:
+        return any(
+            start < block_end and end > block_start
+            for block_start, block_end in block_spans
+        )
+
+    # CommonMark code spans open and close with backtick strings of exactly
+    # the same length. Runs of other lengths are literal content, and line
+    # endings are allowed inside a span.
+    runs = list(BACKTICK_RUN_RE.finditer(body))
+    run_index = 0
+    while run_index < len(runs):
+        opener = runs[run_index]
+        if in_block(opener.start(), opener.end()):
+            run_index += 1
+            continue
+
+        closer_index = run_index + 1
+        matched = False
+        while closer_index < len(runs):
+            closer = runs[closer_index]
+            between = body[opener.end() : closer.start()]
+            crosses_block_region = any(
+                opener.end() <= block_start < closer.start()
+                for block_start, _ in block_spans
+            )
+            if crosses_block_region or INLINE_BLOCK_BREAK_RE.search(between):
+                break
+            if (
+                not in_block(closer.start(), closer.end())
+                and len(closer.group(0)) == len(opener.group(0))
+            ):
+                spans.append((opener.start(), closer.end()))
+                run_index = closer_index + 1
+                matched = True
+                break
+            closer_index += 1
+        if not matched:
+            run_index += 1
 
     spans.sort()
     merged: list[tuple[int, int]] = []
@@ -326,6 +376,101 @@ def unwrap_angle_brackets(target: str) -> str:
     return target
 
 
+def iter_inline_links(body: str) -> list[InlineLink]:
+    """Parse inline link destinations and titles needed for safe rewriting.
+
+    This intentionally leaves label parsing at the same compact scope as the
+    previous matcher, but scans the destination character by character so
+    balanced parentheses and escaped delimiters are handled consistently with
+    CommonMark.
+    """
+    links: list[InlineLink] = []
+    for match in INLINE_LINK_START_RE.finditer(body):
+        cursor = match.end()
+        target_start = cursor
+
+        if cursor < len(body) and body[cursor] == "<":
+            cursor += 1
+            while cursor < len(body):
+                if body[cursor] == "\\" and cursor + 1 < len(body):
+                    cursor += 2
+                    continue
+                if body[cursor] == ">":
+                    cursor += 1
+                    break
+                if body[cursor] in "<\r\n":
+                    break
+                cursor += 1
+            else:
+                continue
+            if body[cursor - 1] != ">":
+                continue
+        else:
+            paren_depth = 0
+            while cursor < len(body):
+                char = body[cursor]
+                if char == "\\" and cursor + 1 < len(body):
+                    cursor += 2
+                    continue
+                if char in "\r\n" or (char.isspace() and paren_depth == 0):
+                    break
+                if char == "(":
+                    paren_depth += 1
+                elif char == ")":
+                    if paren_depth == 0:
+                        break
+                    paren_depth -= 1
+                cursor += 1
+            if paren_depth != 0:
+                continue
+
+        target_end = cursor
+        title = ""
+        whitespace_start = cursor
+        while cursor < len(body) and body[cursor] in " \t":
+            cursor += 1
+
+        if cursor > whitespace_start and cursor < len(body) and body[cursor] != ")":
+            delimiter = body[cursor]
+            if delimiter not in "\"'(":
+                continue
+            closing_delimiter = ")" if delimiter == "(" else delimiter
+            cursor += 1
+            while cursor < len(body):
+                if body[cursor] == "\\" and cursor + 1 < len(body):
+                    cursor += 2
+                    continue
+                if body[cursor] == closing_delimiter:
+                    cursor += 1
+                    break
+                if body[cursor] in "\r\n":
+                    break
+                cursor += 1
+            else:
+                continue
+            if body[cursor - 1] != closing_delimiter:
+                continue
+            while cursor < len(body) and body[cursor] in " \t":
+                cursor += 1
+            title = body[whitespace_start:cursor]
+        elif cursor > whitespace_start:
+            title = body[whitespace_start:cursor]
+
+        if cursor >= len(body) or body[cursor] != ")":
+            continue
+
+        links.append(
+            InlineLink(
+                start=match.start(),
+                end=cursor + 1,
+                label=match.group(0)[:-1],
+                raw_target=body[target_start:target_end],
+                title=title,
+            )
+        )
+    return links
+
+
 def iter_link_targets(body: str) -> list[str]:
     """Yield raw (unwrapped) destinations for inline links and reference-
     style link definitions, skipping code regions. Shared by the adapter's
@@ -338,9 +483,9 @@ def iter_link_targets(body: str) -> list[str]:
         return any(start < c_end and end > c_start for c_start, c_end in code_spans)
 
     targets = [
-        unwrap_angle_brackets(match.group(2))
-        for match in MARKDOWN_LINK_RE.finditer(body)
-        if not in_code(match.start(), match.end())
+        unwrap_angle_brackets(link.raw_target)
+        for link in iter_inline_links(body)
+        if not in_code(link.start, link.end)
     ]
     targets.extend(
         unwrap_angle_brackets(match.group(2))
@@ -372,15 +517,15 @@ def rewrite_markdown_links(
 
     replacements: list[tuple[int, int, str]] = []
 
-    for match in MARKDOWN_LINK_RE.finditer(body):
-        if in_code(match.start(), match.end()):
+    for link in iter_inline_links(body):
+        if in_code(link.start, link.end):
             continue
-        label, raw_target, title = match.groups()
         replacement = rewritten_replacement(
-            raw_target, lambda new_target: f"{label}({new_target}{title or ''})"
+            link.raw_target,
+            lambda new_target: f"{link.label}({new_target}{link.title})",
         )
         if replacement is not None:
-            replacements.append((match.start(), match.end(), replacement))
+            replacements.append((link.start, link.end, replacement))
 
     for match in REFERENCE_DEFINITION_RE.finditer(body):
         if in_code(match.start(), match.end()):
@@ -411,7 +556,8 @@ def rewrite_link_target(
     if is_external_or_special_link(target):
         return target
 
-    link_path, suffix = split_link_suffix(target)
+    raw_link_path, suffix = split_link_suffix(target)
+    link_path = unquote(raw_link_path)
     if not link_path.endswith(".md"):
         return target
 

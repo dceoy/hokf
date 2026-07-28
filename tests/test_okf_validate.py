@@ -170,6 +170,33 @@ class OkfValidateTest(unittest.TestCase):
             self.assertNotIn("index", warning_subjects)
             self.assertIn("link:concepts/missing.md", warning_subjects)
 
+    def test_balanced_and_percent_encoded_links_share_adapter_resolution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            (root / "concepts").mkdir(parents=True)
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n"
+                "# Concepts\n\n"
+                "[Alpha](concepts/alpha%2Emd)\n\n"
+                "[Missing](concepts/missing(v2).md)\n",
+                encoding="utf-8",
+            )
+            (root / "concepts" / "alpha.md").write_text(
+                "---\ntype: Minimal\n---\n# Alpha\n", encoding="utf-8"
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            warning_subjects = {
+                finding.subject
+                for finding in findings
+                if finding.severity == "WARNING"
+            }
+
+            self.assertNotIn("index", warning_subjects)
+            self.assertIn("link:concepts/missing(v2).md", warning_subjects)
+
     def test_link_shaped_text_inside_code_block_is_not_flagged_as_broken(
         self,
     ) -> None:
@@ -195,6 +222,32 @@ class OkfValidateTest(unittest.TestCase):
             }
 
             self.assertNotIn("link:missing.md", warning_subjects)
+
+    def test_link_shaped_text_inside_commonmark_code_spans_is_not_flagged(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n# Empty Index\n", encoding="utf-8"
+            )
+            (root / "example.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "Long delimiter: ``code ` [missing](missing.md)``.\n\n"
+                "Multiline: ``code\n[also missing](also-missing.md)``.\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            warning_subjects = {
+                finding.subject
+                for finding in findings
+                if finding.severity == "WARNING"
+            }
+
+            self.assertNotIn("link:missing.md", warning_subjects)
+            self.assertNotIn("link:also-missing.md", warning_subjects)
 
     def test_root_index_without_declared_version_is_conformant(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
