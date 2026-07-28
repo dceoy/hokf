@@ -197,6 +197,39 @@ class OkfValidateTest(unittest.TestCase):
             self.assertNotIn("index", warning_subjects)
             self.assertIn("link:concepts/missing(v2).md", warning_subjects)
 
+    def test_commonmark_escaped_and_entity_links_share_adapter_resolution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            (root / "concepts").mkdir(parents=True)
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n"
+                "# Concepts\n\n"
+                "[Alpha](concepts/alpha\\.md)\n\n"
+                "[Beta](concepts/beta&#46;md)\n\n"
+                "[Missing](concepts/missing\\.md)\n\n"
+                "[External](https&#58;//example.com)\n",
+                encoding="utf-8",
+            )
+            (root / "concepts" / "alpha.md").write_text(
+                "---\ntype: Minimal\n---\n# Alpha\n", encoding="utf-8"
+            )
+            (root / "concepts" / "beta.md").write_text(
+                "---\ntype: Minimal\n---\n# Beta\n", encoding="utf-8"
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            warning_subjects = {
+                finding.subject
+                for finding in findings
+                if finding.severity == "WARNING"
+            }
+
+            self.assertNotIn("index", warning_subjects)
+            self.assertIn("link:concepts/missing\\.md", warning_subjects)
+            self.assertNotIn("link:https&#58;//example.com", warning_subjects)
+
     def test_nested_bracket_link_label_broken_target_is_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "okf"

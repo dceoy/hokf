@@ -11,11 +11,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
-from urllib.parse import unquote
 
 try:
     from tools.okf_common import FrontMatterError, OkfDocument, read_document
     from tools.okf_hugo_adapter import (
+        decode_commonmark_link_path,
+        is_external_or_special_link,
         iter_link_targets,
         normalize_posix_path,
         split_link_suffix,
@@ -27,6 +28,8 @@ except ModuleNotFoundError:
         read_document,
     )
     from okf_hugo_adapter import (  # type: ignore[no-redef]
+        decode_commonmark_link_path,
+        is_external_or_special_link,
         iter_link_targets,
         normalize_posix_path,
         split_link_suffix,
@@ -586,10 +589,10 @@ def validate_links(
 ) -> list[Finding]:
     findings = []
     for target in iter_link_targets(document.body):
-        if target.startswith(("http://", "https://", "mailto:", "tel:", "#", "{{")):
+        if is_external_or_special_link(target):
             continue
         raw_link_path, _ = split_link_suffix(target)
-        link_path = unquote(raw_link_path)
+        link_path = decode_commonmark_link_path(raw_link_path)
         if not link_path:
             continue
         resolved = resolve_link_path(document.relative_path, link_path)
@@ -610,10 +613,10 @@ def resolve_document_links(
 ) -> set[PurePosixPath]:
     resolved_paths = set()
     for target in iter_link_targets(document.body):
-        if target.startswith(("http://", "https://", "mailto:", "tel:", "#", "{{")):
+        if is_external_or_special_link(target):
             continue
         raw_link_path, _ = split_link_suffix(target)
-        link_path = unquote(raw_link_path)
+        link_path = decode_commonmark_link_path(raw_link_path)
         resolved = resolve_link_path(document.relative_path, link_path)
         if resolved in paths:
             resolved_paths.add(resolved)

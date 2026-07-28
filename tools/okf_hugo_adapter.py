@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import html
+import html.entities
 import posixpath
 import re
 import shutil
+import string
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -40,18 +43,23 @@ REFERENCE_DEFINITION_RE = re.compile(
 )
 BACKTICK_RUN_RE = re.compile(r"`+")
 INLINE_BLOCK_BREAK_RE = re.compile(r"\r?\n[ \t]*\r?\n")
+BLANK_LINE_RE = re.compile(r"(?:\r\n|\r|\n)[ \t]*(?:\r\n|\r|\n)")
+CHARACTER_REFERENCE_RE = re.compile(
+    r"&(?:#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6}|[A-Za-z][A-Za-z0-9]*);"
+)
 FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 INDENTED_LINE_RE = re.compile(r"^(?: {4}|\t)")
 LIST_MARKER_RE = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
+ASCII_PUNCTUATION = frozenset(string.punctuation)
 
 
 @dataclass(frozen=True)
 class InlineLink:
     start: int
     end: int
-    label: str
+    prefix: str
     raw_target: str
-    title: str
+    suffix: str
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -424,16 +432,36 @@ def find_inline_link_openers(body: str) -> list[tuple[int, int]]:
     return openers
 
 
+def consume_link_whitespace(body: str, cursor: int) -> int:
+    """Consume spaces/tabs and at most one CommonMark line ending."""
+    while cursor < len(body) and body[cursor] in " \t":
+        cursor += 1
+    if cursor < len(body) and body[cursor] in "\r\n":
+        if (
+            body[cursor] == "\r"
+            and cursor + 1 < len(body)
+            and body[cursor + 1] == "\n"
+        ):
+            cursor += 2
+        else:
+            cursor += 1
+        while cursor < len(body) and body[cursor] in " \t":
+            cursor += 1
+    return cursor
+
+
 def iter_inline_links(body: str) -> list[InlineLink]:
     """Parse inline link destinations and titles needed for safe rewriting.
 
     Label boundaries come from find_inline_link_openers(); the destination
     and optional title are scanned character by character so balanced
-    parentheses and escaped delimiters are handled consistently with
-    CommonMark.
+    parentheses, escaped delimiters, multiline titles, and the spaces, tabs,
+    or single line ending permitted between components are handled
+    consistently with CommonMark.
     """
     links: list[InlineLink] = []
     for label_start, cursor in find_inline_link_openers(body):
+        cursor = consume_link_whitespace(body, cursor)
         target_start = cursor
 
         if cursor < len(body) and body[cursor] == "<":
@@ -459,7 +487,11 @@ def iter_inline_links(body: str) -> list[InlineLink]:
                 if char == "\\" and cursor + 1 < len(body):
                     cursor += 2
                     continue
-                if char in "\r\n" or (char.isspace() and paren_depth == 0):
+                if (
+                    ord(char) < 0x20
+                    or char == "\x7f"
+                    or (char == " " and paren_depth == 0)
+                ):
                     break
                 if char == "(":
                     paren_depth += 1
@@ -472,10 +504,8 @@ def iter_inline_links(body: str) -> list[InlineLink]:
                 continue
 
         target_end = cursor
-        title = ""
         whitespace_start = cursor
-        while cursor < len(body) and body[cursor] in " \t":
-            cursor += 1
+        cursor = consume_link_whitespace(body, cursor)
 
         if cursor > whitespace_start and cursor < len(body) and body[cursor] != ")":
             delimiter = body[cursor]
@@ -483,6 +513,7 @@ def iter_inline_links(body: str) -> list[InlineLink]:
                 continue
             closing_delimiter = ")" if delimiter == "(" else delimiter
             cursor += 1
+            title_content_start = cursor
             while cursor < len(body):
                 if body[cursor] == "\\" and cursor + 1 < len(body):
                     cursor += 2
@@ -490,18 +521,15 @@ def iter_inline_links(body: str) -> list[InlineLink]:
                 if body[cursor] == closing_delimiter:
                     cursor += 1
                     break
-                if body[cursor] in "\r\n":
-                    break
                 cursor += 1
             else:
                 continue
             if body[cursor - 1] != closing_delimiter:
                 continue
-            while cursor < len(body) and body[cursor] in " \t":
-                cursor += 1
-            title = body[whitespace_start:cursor]
-        elif cursor > whitespace_start:
-            title = body[whitespace_start:cursor]
+            title_content = body[title_content_start : cursor - 1]
+            if BLANK_LINE_RE.search(title_content):
+                continue
+            cursor = consume_link_whitespace(body, cursor)
 
         if cursor >= len(body) or body[cursor] != ")":
             continue
@@ -510,9 +538,9 @@ def iter_inline_links(body: str) -> list[InlineLink]:
             InlineLink(
                 start=label_start,
                 end=cursor + 1,
-                label=body[label_start : target_start - 1],
+                prefix=body[label_start:target_start],
                 raw_target=body[target_start:target_end],
-                title=title,
+                suffix=body[target_end : cursor + 1],
             )
         )
     return links
@@ -569,7 +597,7 @@ def rewrite_markdown_links(
             continue
         replacement = rewritten_replacement(
             link.raw_target,
-            lambda new_target: f"{link.label}({new_target}{link.title})",
+            lambda new_target: f"{link.prefix}{new_target}{link.suffix}",
         )
         if replacement is not None:
             replacements.append((link.start, link.end, replacement))
@@ -604,7 +632,7 @@ def rewrite_link_target(
         return target
 
     raw_link_path, suffix = split_link_suffix(target)
-    link_path = unquote(raw_link_path)
+    link_path = decode_commonmark_link_path(raw_link_path)
     if not link_path.endswith(".md"):
         return target
 
@@ -622,19 +650,74 @@ def rewrite_link_target(
     return quote(public_url_for_okf_path(resolved), safe="/") + suffix
 
 
+def decode_commonmark_link_path(raw_path: str) -> str:
+    """Decode CommonMark escapes/references, then URI percent encoding.
+
+    This intentionally operates only on the path component selected by
+    split_link_suffix(), leaving the original query and fragment untouched.
+    A single pass is required because an escaped ampersand (``\\&amp;``) is
+    literal text, not the start of a character reference.
+    """
+    decoded: list[str] = []
+    cursor = 0
+    while cursor < len(raw_path):
+        char = raw_path[cursor]
+        if (
+            char == "\\"
+            and cursor + 1 < len(raw_path)
+            and raw_path[cursor + 1] in ASCII_PUNCTUATION
+        ):
+            decoded.append(raw_path[cursor + 1])
+            cursor += 2
+            continue
+        if char == "&":
+            match = CHARACTER_REFERENCE_RE.match(raw_path, cursor)
+            if match is not None:
+                reference = match.group(0)
+                entity_name = reference[1:] if not reference.startswith("&#") else None
+                if entity_name is None or entity_name in html.entities.html5:
+                    decoded.append(html.unescape(reference))
+                    cursor = match.end()
+                    continue
+        decoded.append(char)
+        cursor += 1
+    return unquote("".join(decoded))
+
+
 def is_external_or_special_link(target: str) -> bool:
     # Callers unwrap a `<...>`-bracketed destination before reaching this
-    # check, so target never itself starts with "<" here.
-    return "://" in target or target.startswith(("#", "mailto:", "tel:", "{{"))
+    # check, so target never itself starts with "<" here. Check both the raw
+    # spelling and decoded path so schemes written with CommonMark character
+    # references/escapes are not misclassified as bundle-relative paths.
+    if "://" in target or target.startswith(("#", "mailto:", "tel:", "{{")):
+        return True
+    raw_path, _ = split_link_suffix(target)
+    decoded_path = decode_commonmark_link_path(raw_path)
+    return "://" in decoded_path or decoded_path.startswith(("mailto:", "tel:", "{{"))
 
 
 def split_link_suffix(target: str) -> tuple[str, str]:
-    suffix_start = len(target)
-    for marker in ("#", "?"):
-        marker_index = target.find(marker)
-        if marker_index != -1:
-            suffix_start = min(suffix_start, marker_index)
-    return target[:suffix_start], target[suffix_start:]
+    cursor = 0
+    while cursor < len(target):
+        if (
+            target[cursor] == "\\"
+            and cursor + 1 < len(target)
+            and target[cursor + 1] in ASCII_PUNCTUATION
+        ):
+            cursor += 2
+            continue
+        if target[cursor] == "&":
+            reference = CHARACTER_REFERENCE_RE.match(target, cursor)
+            if reference is not None:
+                value = reference.group(0)
+                entity_name = value[1:] if not value.startswith("&#") else None
+                if entity_name is None or entity_name in html.entities.html5:
+                    cursor = reference.end()
+                    continue
+        if target[cursor] in "#?":
+            return target[:cursor], target[cursor:]
+        cursor += 1
+    return target, ""
 
 
 def normalize_posix_path(path: PurePosixPath) -> PurePosixPath:

@@ -12,7 +12,7 @@ import yaml
 
 
 FRONT_MATTER_DELIMITER = "---"
-_CLOSING_DELIMITER_RE = re.compile(r"^---[ \t]*\r?\n?\Z")
+_FRONT_MATTER_DELIMITER_RE = re.compile(r"^---[ \t]*\r?\n?\Z")
 
 
 class FrontMatterError(ValueError):
@@ -132,14 +132,14 @@ def read_documents(root: Path) -> list[OkfDocument]:
 
 def split_front_matter(markdown: str) -> tuple[dict[str, Any] | None, str, bool]:
     lines = markdown.splitlines(keepends=True)
-    if not lines or lines[0].strip() != FRONT_MATTER_DELIMITER:
+    if not lines or not _FRONT_MATTER_DELIMITER_RE.match(lines[0]):
         return None, markdown, False
 
     closing_index = next(
         (
             index
             for index, line in enumerate(lines[1:], start=1)
-            if _CLOSING_DELIMITER_RE.match(line)
+            if _FRONT_MATTER_DELIMITER_RE.match(line)
         ),
         None,
     )
