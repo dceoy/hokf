@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -17,7 +17,9 @@ from tools.okf_hugo_adapter import (
     check_generated_content,
     collect_directory_differences,
     generate_content,
+    iter_link_targets,
     main,
+    rewrite_markdown_links,
 )
 
 
@@ -178,6 +180,24 @@ class OkfHugoAdapterTest(unittest.TestCase):
             self.assertEqual(
                 collect_directory_differences(deep_comparison),
                 ["content differs: _index.md"],
+            )
+
+    def test_check_reports_file_directory_type_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            src.mkdir()
+            dst.mkdir()
+            (src / "index.md").write_text("# Index\n", encoding="utf-8")
+            (dst / "_index.md").mkdir()
+
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as stderr:
+                self.assertEqual(check_generated_content(src, dst), 1)
+
+            self.assertIn(
+                "type differs or cannot compare: _index.md",
+                stderr.getvalue(),
             )
 
     def test_check_reports_missing_destination_before_generation(self) -> None:
@@ -499,6 +519,61 @@ class OkfHugoAdapterTest(unittest.TestCase):
 
             self.assertIn("[child-ref]: /concepts/child/", body)
             self.assertIn("[root-ref]: </> \"Root\"", body)
+
+    def test_reference_definition_title_is_not_rewritten_as_inline_link(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            src.mkdir()
+            (src / "child.md").write_text(
+                "---\ntype: Minimal\n---\nChild\n", encoding="utf-8"
+            )
+            (src / "other.md").write_text(
+                "---\ntype: Minimal\n---\nOther\n", encoding="utf-8"
+            )
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Index\n\n"
+                '[ref]: child.md "[fake](other.md)"\n',
+                encoding="utf-8",
+            )
+
+            generate_content(src, dst)
+            _, body = load_generated(dst / "_index.md")
+
+            self.assertIn('[ref]: /child/ "[fake](other.md)"', body)
+            self.assertEqual(
+                iter_link_targets('[ref]: child.md "[fake](other.md)"\n'),
+                ["child.md"],
+            )
+
+    def test_crlf_fence_does_not_hide_following_links_or_reference_definitions(
+        self,
+    ) -> None:
+        body = (
+            "# Parent\r\n\r\n"
+            "```markdown\r\n"
+            "[example](child.md)\r\n"
+            "```\r\n\r\n"
+            "Real link: [child](child.md)\r\n\r\n"
+            "[child-ref]: child.md\r\n"
+        )
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/child.md"),
+            },
+        )
+
+        self.assertIn("[example](child.md)", rewritten)
+        self.assertIn("Real link: [child](/concepts/child/)", rewritten)
+        self.assertIn("[child-ref]: /concepts/child/\r\n", rewritten)
 
     def test_rewrite_markdown_links_handles_all_inline_destination_and_title_forms(
         self,

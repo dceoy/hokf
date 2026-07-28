@@ -38,7 +38,7 @@ except ModuleNotFoundError:
 # indented up to 3 spaces, with the target optionally wrapped in `<...>`.
 REFERENCE_DEFINITION_RE = re.compile(
     r'^([ \t]{0,3}\[[^\]\n]+\]:[ \t]*)(<[^>\n]*>|\S+)'
-    r'([ \t]+(?:"[^"\n]*"|\'[^\'\n]*\'|\([^)\n]*\)))?[ \t]*$',
+    r'([ \t]+(?:"[^"\n]*"|\'[^\'\n]*\'|\([^)\n]*\)))?[ \t]*(?=\r?$)',
     re.MULTILINE,
 )
 BACKTICK_RUN_RE = re.compile(r"`+")
@@ -272,7 +272,7 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
     i = 0
     while i < n:
         line = lines[i]
-        text = line.rstrip("\n")
+        text = line.rstrip("\r\n")
 
         fence_match = FENCE_OPEN_RE.match(text)
         if fence_match:
@@ -282,7 +282,7 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
                 rf"^[ \t]{{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*$"
             )
             j = i + 1
-            while j < n and not close_re.match(lines[j].rstrip("\n")):
+            while j < n and not close_re.match(lines[j].rstrip("\r\n")):
                 j += 1
             end_index = j if j < n else n - 1
             spans.append((offsets[i], offsets[end_index] + len(lines[end_index])))
@@ -304,7 +304,7 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
                     last_content = j
                     j += 1
                     continue
-                if lines[j].strip("\n") == "":
+                if lines[j].strip("\r\n") == "":
                     j += 1
                     continue
                 break
@@ -313,7 +313,7 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
             )
             i = last_content + 1
             prev_blank = False
-            last_nonblank_text = lines[last_content].rstrip("\n")
+            last_nonblank_text = lines[last_content].rstrip("\r\n")
             continue
 
         if text.strip() != "":
@@ -557,14 +557,23 @@ def iter_link_targets(body: str) -> list[str]:
     def in_code(start: int, end: int) -> bool:
         return any(start < c_end and end > c_start for c_start, c_end in code_spans)
 
+    reference_matches = list(REFERENCE_DEFINITION_RE.finditer(body))
+
+    def in_reference_definition(start: int, end: int) -> bool:
+        return any(
+            start < match.end() and end > match.start()
+            for match in reference_matches
+        )
+
     targets = [
         unwrap_angle_brackets(link.raw_target)
         for link in iter_inline_links(body)
         if not in_code(link.start, link.end)
+        and not in_reference_definition(link.start, link.end)
     ]
     targets.extend(
         unwrap_angle_brackets(match.group(2))
-        for match in REFERENCE_DEFINITION_RE.finditer(body)
+        for match in reference_matches
         if not in_code(match.start(), match.end())
     )
     return targets
@@ -580,6 +589,14 @@ def rewrite_markdown_links(
     def in_code(start: int, end: int) -> bool:
         return any(start < c_end and end > c_start for c_start, c_end in code_spans)
 
+    reference_matches = list(REFERENCE_DEFINITION_RE.finditer(body))
+
+    def in_reference_definition(start: int, end: int) -> bool:
+        return any(
+            start < match.end() and end > match.start()
+            for match in reference_matches
+        )
+
     def rewritten_replacement(
         raw_target: str, build: Callable[[str], str]
     ) -> str | None:
@@ -593,7 +610,9 @@ def rewrite_markdown_links(
     replacements: list[tuple[int, int, str]] = []
 
     for link in iter_inline_links(body):
-        if in_code(link.start, link.end):
+        if in_code(link.start, link.end) or in_reference_definition(
+            link.start, link.end
+        ):
             continue
         replacement = rewritten_replacement(
             link.raw_target,
@@ -602,7 +621,7 @@ def rewrite_markdown_links(
         if replacement is not None:
             replacements.append((link.start, link.end, replacement))
 
-    for match in REFERENCE_DEFINITION_RE.finditer(body):
+    for match in reference_matches:
         if in_code(match.start(), match.end()):
             continue
         prefix, raw_target, title = match.groups()
@@ -772,6 +791,10 @@ def collect_directory_differences(comparison: filecmp.dircmp) -> list[str]:
         differences.append(f"unexpected in destination: {name}")
     for name in comparison.diff_files:
         differences.append(f"content differs: {name}")
+    for name in comparison.common_funny:
+        differences.append(f"type differs or cannot compare: {name}")
+    for name in comparison.funny_files:
+        differences.append(f"cannot compare content: {name}")
     for name, subcomparison in comparison.subdirs.items():
         for difference in collect_directory_differences(subcomparison):
             differences.append(f"{name}/{difference}")
