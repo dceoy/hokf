@@ -194,6 +194,75 @@ class OkfHugoAdapterTest(unittest.TestCase):
         self.assertEqual(metadata["answer"], "yes")
         self.assertIs(metadata["flag"], True)
 
+    def test_cli_rejects_symlinked_destination_before_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            src.mkdir()
+            (src / "index.md").write_text("# Index\n", encoding="utf-8")
+
+            target = root / "target"
+            target.mkdir()
+            (target / "keep.txt").write_text("keep", encoding="utf-8")
+
+            dst = root / "site" / "content"
+            dst.parent.mkdir(parents=True)
+            dst.symlink_to(target, target_is_directory=True)
+
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit):
+                    main(["--src", str(src), "--dst", str(dst), "--clean"])
+
+            self.assertTrue(dst.is_symlink())
+            self.assertTrue((target / "keep.txt").exists())
+
+    def test_cli_rejects_symlinked_destination_parent_before_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            src.mkdir()
+            (src / "index.md").write_text("# Index\n", encoding="utf-8")
+
+            target = root / "target"
+            target.mkdir()
+            (target / "keep.txt").write_text("keep", encoding="utf-8")
+
+            site_link = root / "site"
+            site_link.symlink_to(target, target_is_directory=True)
+            dst = site_link / "content"
+
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit):
+                    main(["--src", str(src), "--dst", str(dst), "--clean"])
+
+            self.assertTrue(site_link.is_symlink())
+            self.assertTrue((target / "keep.txt").exists())
+
+    def test_rewrite_markdown_links_skips_code_regions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            src.mkdir()
+            (src / "child.md").write_text("---\ntype: Minimal\n---\nChild\n", encoding="utf-8")
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Index\n\n"
+                "Inline example: `[child](child.md)`.\n\n"
+                "```markdown\n"
+                "[child](child.md)\n"
+                "```\n\n"
+                "Real link: [child](child.md)\n",
+                encoding="utf-8",
+            )
+
+            generate_content(src, dst)
+            _, body = load_generated(dst / "_index.md")
+
+            self.assertIn("`[child](child.md)`", body)
+            self.assertIn("```markdown\n[child](child.md)\n```", body)
+            self.assertIn("Real link: [child](/child/)", body)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,5 @@
+{{ if and (eq (printf "%T" .) "string") (or (hasPrefix . "https://") (hasPrefix . "http://")) }}
+  <a href="{{ . }}">{{ . }}</a>
+{{ else }}
+  {{ . }}
+{{ end }}

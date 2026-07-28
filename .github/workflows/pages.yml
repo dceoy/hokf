@@ -66,6 +66,41 @@ jobs:
             --directory "${RUNNER_TEMP}/hugo" hugo
           echo "${RUNNER_TEMP}/hugo" >> "${GITHUB_PATH}"
 
+      - name: Build Hugo site with warning-only concept metadata
+        run: |
+          set -euo pipefail
+          fixture="$(mktemp -d)"
+          cp -R site/layouts "${fixture}/layouts"
+          cp -R site/assets "${fixture}/assets"
+          cp site/hugo.toml "${fixture}/hugo.toml"
+          mkdir -p "${fixture}/content"
+          cat > "${fixture}/content/_index.md" <<'EOF'
+          ---
+          type: knowledge
+          ---
+          # Root
+          EOF
+          cat > "${fixture}/content/warning-only.md" <<'EOF'
+          ---
+          type: Minimal
+          resource:
+            url: https://example.com
+          tags: single-tag
+          sources: not-a-list
+          ---
+          Warning-only optional metadata must not fail the Hugo build.
+          EOF
+          cat > "${fixture}/content/warning-only-source-item.md" <<'EOF'
+          ---
+          type: Minimal
+          sources: [not-a-mapping, {id: x, resource: 42, title: 7, author: yes}]
+          ---
+          A source list with a non-mapping item and mixed-type fields must not fail the Hugo build.
+          EOF
+          hugo --source "${fixture}" --destination "${fixture}/public"
+          test -f "${fixture}/public/warning-only/index.html"
+          test -f "${fixture}/public/warning-only-source-item/index.html"
+
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

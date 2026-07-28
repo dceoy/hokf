@@ -30,11 +30,19 @@ except ModuleNotFoundError:
 
 
 MARKDOWN_LINK_RE = re.compile(r"(!?\[[^\]]*\])\(([^)\s]+)(\s+\"[^\"]*\")?\)")
+CODE_REGION_RE = re.compile(
+    r"^(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^(?P=fence)[ \t]*$|`[^`\n]+`",
+    re.MULTILINE | re.DOTALL,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     src = args.src.resolve()
+
+    symlinked = find_symlinked_destination(args.dst)
+    if symlinked is not None:
+        raise SystemExit(f"destination path contains a symbolic link: {symlinked}")
     dst = args.dst.resolve()
 
     if not src.is_dir():
@@ -75,6 +83,26 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="remove existing destination files before generating",
     )
     return parser.parse_args(argv)
+
+
+def find_symlinked_destination(dst: Path) -> Path | None:
+    """Check dst and its not-yet-existing ancestors for a symbolic link.
+
+    The walk stops at the first ancestor that already exists on disk: that
+    directory predates this invocation and is outside what it is creating,
+    so pre-existing symlinks further up the filesystem (for example a
+    system temp directory) are not flagged.
+    """
+    current = dst.absolute()
+    while True:
+        if current.is_symlink():
+            return current
+        if current.exists():
+            return None
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
 
 
 def check_generated_content(src: Path, dst: Path) -> int:
@@ -146,7 +174,17 @@ def rewrite_markdown_links(
             return match.group(0)
         return f"{label}({rewritten}{title or ''})"
 
-    return MARKDOWN_LINK_RE.sub(replace, body)
+    def rewrite_segment(text: str) -> str:
+        return MARKDOWN_LINK_RE.sub(replace, text)
+
+    segments: list[str] = []
+    cursor = 0
+    for code_match in CODE_REGION_RE.finditer(body):
+        segments.append(rewrite_segment(body[cursor : code_match.start()]))
+        segments.append(code_match.group(0))
+        cursor = code_match.end()
+    segments.append(rewrite_segment(body[cursor:]))
+    return "".join(segments)
 
 
 def rewrite_link_target(
