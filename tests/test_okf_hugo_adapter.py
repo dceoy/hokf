@@ -465,6 +465,31 @@ class OkfHugoAdapterTest(unittest.TestCase):
             self.assertIn("```markdown\n[child](child.md)\n```", body)
             self.assertIn("Real link: [child](/child/)", body)
 
+    def test_rewrite_markdown_links_handles_reference_definitions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            (src / "concepts").mkdir(parents=True)
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\nChild\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [the child][child-ref] and [the root][root-ref].\n\n"
+                "[child-ref]: child.md\n"
+                "[root-ref]: <../index.md> \"Root\"\n",
+                encoding="utf-8",
+            )
+            (src / "index.md").write_text("---\ntype: Minimal\n---\n# Root\n", encoding="utf-8")
+
+            generate_content(src, dst)
+            _, body = load_generated(dst / "concepts" / "parent.md")
+
+            self.assertIn("[child-ref]: /concepts/child/", body)
+            self.assertIn("[root-ref]: </> \"Root\"", body)
+
 
 @unittest.skipUnless(shutil.which("hugo"), "hugo binary is not installed")
 class OkfHugoAdapterRealBuildTest(unittest.TestCase):
@@ -525,6 +550,92 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
                     encoding="utf-8"
                 ),
             )
+
+    def test_reference_style_links_resolve_in_real_hugo_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [the child][child-ref] and [the root][root-ref].\n\n"
+                "[child-ref]: child.md\n"
+                "[root-ref]: /index.md\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">the child</a>', parent_html)
+            self.assertIn('>the root</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+            self.assertNotIn('href="/index.md"', parent_html)
+            self.assertNotIn('href="../index.md"', parent_html)
+
+    def test_bracketed_reference_target_resolves_in_real_hugo_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [the root][root-ref].\n\n"
+                "[root-ref]: <../index.md> \"Root\"\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('>the root</a>', parent_html)
+            self.assertNotIn('href="../index.md"', parent_html)
+
+    def test_leaf_page_and_sibling_directory_both_publish_in_real_hugo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            content = root / "content"
+            (content / "foo").mkdir(parents=True)
+            (content / "foo.md").write_text(
+                "---\ntype: knowledge\n---\nFoo page body.\n", encoding="utf-8"
+            )
+            (content / "foo" / "bar.md").write_text(
+                "---\ntype: knowledge\n---\nBar page body.\n", encoding="utf-8"
+            )
+            shutil.copytree(SITE_DIR / "layouts", root / "layouts")
+            shutil.copytree(SITE_DIR / "assets", root / "assets")
+            shutil.copy(SITE_DIR / "hugo.toml", root / "hugo.toml")
+            public = root / "public"
+            subprocess.run(
+                ["hugo", "--source", str(root), "--destination", str(public)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            # Regression test for a claimed foo.md/foo/bar.md URL collision:
+            # the pinned Hugo binary adopts foo.md as the foo/ section page
+            # rather than shadowing it, so both pages publish and are
+            # reachable at their own URLs.
+            foo_html = (public / "foo" / "index.html").read_text(encoding="utf-8")
+            bar_html = (public / "foo" / "bar" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("Foo page body.", foo_html)
+            self.assertIn("Bar page body.", bar_html)
 
 
 if __name__ == "__main__":

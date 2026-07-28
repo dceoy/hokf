@@ -30,6 +30,13 @@ except ModuleNotFoundError:
 
 
 MARKDOWN_LINK_RE = re.compile(r"(!?\[[^\]]*\])\(([^)\s]+)(\s+\"[^\"]*\")?\)")
+# CommonMark link reference definition: `[label]: target "title"`, optionally
+# indented up to 3 spaces, with the target optionally wrapped in `<...>`.
+REFERENCE_DEFINITION_RE = re.compile(
+    r'^([ \t]{0,3}\[[^\]\n]+\]:[ \t]*)(<[^>\n]*>|\S+)'
+    r'([ \t]+(?:"[^"\n]*"|\'[^\'\n]*\'|\([^)\n]*\)))?[ \t]*$',
+    re.MULTILINE,
+)
 CODE_REGION_RE = re.compile(
     r"^(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^(?P=fence)[ \t]*$|`[^`\n]+`",
     re.MULTILINE | re.DOTALL,
@@ -212,8 +219,19 @@ def rewrite_markdown_links(
             return match.group(0)
         return f"{label}({rewritten}{title or ''})"
 
+    def replace_reference_definition(match: re.Match[str]) -> str:
+        prefix, raw_target, title = match.groups()
+        bracketed = raw_target.startswith("<") and raw_target.endswith(">")
+        target = raw_target[1:-1] if bracketed else raw_target
+        rewritten = rewrite_link_target(source_relative_path, target, okf_paths)
+        if rewritten == target:
+            return match.group(0)
+        new_target = f"<{rewritten}>" if bracketed else rewritten
+        return f"{prefix}{new_target}{title or ''}"
+
     def rewrite_segment(text: str) -> str:
-        return MARKDOWN_LINK_RE.sub(replace, text)
+        text = MARKDOWN_LINK_RE.sub(replace, text)
+        return REFERENCE_DEFINITION_RE.sub(replace_reference_definition, text)
 
     segments: list[str] = []
     cursor = 0
