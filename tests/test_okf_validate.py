@@ -141,6 +141,61 @@ class OkfValidateTest(unittest.TestCase):
                     1,
                 )
 
+    def test_reference_style_index_links_count_as_indexed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            (root / "concepts").mkdir(parents=True)
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n"
+                "# Concepts\n\n"
+                "See [Alpha][alpha-ref].\n\n"
+                "[alpha-ref]: concepts/alpha.md\n"
+                "[missing-ref]: concepts/missing.md\n",
+                encoding="utf-8",
+            )
+            (root / "concepts" / "alpha.md").write_text(
+                "---\ntype: Minimal\n---\n# Alpha\n", encoding="utf-8"
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            warning_subjects = {
+                finding.subject
+                for finding in findings
+                if finding.severity == "WARNING"
+            }
+
+            # alpha.md is only reachable via a reference-style link, so it
+            # must not be reported as unindexed; the reference-style link
+            # to a genuinely missing concept must still be reported.
+            self.assertNotIn("index", warning_subjects)
+            self.assertIn("link:concepts/missing.md", warning_subjects)
+
+    def test_link_shaped_text_inside_code_block_is_not_flagged_as_broken(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n# Empty Index\n", encoding="utf-8"
+            )
+            (root / "example.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "```markdown\n"
+                "[missing](missing.md)\n"
+                "```\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            warning_subjects = {
+                finding.subject
+                for finding in findings
+                if finding.severity == "WARNING"
+            }
+
+            self.assertNotIn("link:missing.md", warning_subjects)
+
     def test_root_index_without_declared_version_is_conformant(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "okf"

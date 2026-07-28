@@ -86,19 +86,20 @@ class OkfHugoAdapterTest(unittest.TestCase):
             self.assertEqual(generate_content(src, dst), 2)
 
             index_metadata, index_body = load_generated(dst / "_index.md")
-            self.assertEqual(index_metadata["okf_version"], "0.2")
+            self.assertEqual(index_metadata["params"]["okf"]["okf_version"], "0.2")
             self.assertEqual(index_metadata["type"], "knowledge")
             self.assertIn("[Alpha](/concepts/alpha/)", index_body)
 
             metadata, body = load_generated(dst / "concepts" / "alpha.md")
             self.assertEqual(metadata["type"], "Producer Defined Type")
-            self.assertEqual(metadata["okf_type"], "producer-owned-value")
+            okf_params = metadata["params"]["okf"]
+            self.assertEqual(okf_params["okf_type"], "producer-owned-value")
             self.assertEqual(
-                metadata["producer_extension"],
+                okf_params["producer_extension"],
                 {"nested": ["one", {"two": 2}]},
             )
             self.assertEqual(
-                metadata["sources"][0]["signals"],  # type: ignore[index]
+                okf_params["sources"][0]["signals"],
                 {"confidence": "high"},
             )
             self.assertIn("[the root](/)", body)
@@ -118,8 +119,8 @@ class OkfHugoAdapterTest(unittest.TestCase):
             metadata, _ = load_generated(dst / "minimal.md")
 
             self.assertEqual(metadata["type"], "Minimal")
-            self.assertIn("timestamp", metadata)
-            self.assertNotIn("generated", metadata)
+            self.assertIn("timestamp", metadata["params"]["okf"])
+            self.assertNotIn("generated", metadata["params"]["okf"])
 
     def test_reserved_log_is_not_mapped_as_a_concept(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -490,6 +491,184 @@ class OkfHugoAdapterTest(unittest.TestCase):
             self.assertIn("[child-ref]: /concepts/child/", body)
             self.assertIn("[root-ref]: </> \"Root\"", body)
 
+    def test_rewrite_markdown_links_handles_all_inline_destination_and_title_forms(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            src.mkdir()
+            (src / "child.md").write_text(
+                "---\ntype: Minimal\n---\nChild\n", encoding="utf-8"
+            )
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Index\n\n"
+                "Angle-bracketed: [child](<child.md>).\n\n"
+                "Single-quoted title: [child](child.md 'Child').\n\n"
+                "Parenthesized title: [child](child.md (Child)).\n",
+                encoding="utf-8",
+            )
+
+            generate_content(src, dst)
+            _, body = load_generated(dst / "_index.md")
+
+            self.assertIn("Angle-bracketed: [child](</child/>).", body)
+            self.assertIn("Single-quoted title: [child](/child/ 'Child').", body)
+            self.assertIn("Parenthesized title: [child](/child/ (Child)).", body)
+
+    def test_rewrite_markdown_links_skips_indented_fence_and_longer_closing_fence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            src.mkdir()
+            (src / "child.md").write_text(
+                "---\ntype: Minimal\n---\nChild\n", encoding="utf-8"
+            )
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Index\n\n"
+                "   ```markdown\n"
+                "   [child](child.md)\n"
+                "   ```\n\n"
+                "````markdown\n"
+                "[child](child.md)\n"
+                "`````\n\n"
+                "Real link: [child](child.md)\n",
+                encoding="utf-8",
+            )
+
+            generate_content(src, dst)
+            _, body = load_generated(dst / "_index.md")
+
+            self.assertIn("   ```markdown\n   [child](child.md)\n   ```", body)
+            self.assertIn("````markdown\n[child](child.md)\n`````", body)
+            self.assertIn("Real link: [child](/child/)", body)
+
+    def test_rewrite_markdown_links_skips_indented_code_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            src.mkdir()
+            (src / "child.md").write_text(
+                "---\ntype: Minimal\n---\nChild\n", encoding="utf-8"
+            )
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Index\n\n"
+                "    [child](child.md)\n\n"
+                "Real link: [child](child.md)\n",
+                encoding="utf-8",
+            )
+
+            generate_content(src, dst)
+            _, body = load_generated(dst / "_index.md")
+
+            self.assertIn("    [child](child.md)", body)
+            self.assertIn("Real link: [child](/child/)", body)
+
+    def test_rewrite_markdown_links_treats_indented_list_continuation_as_prose(
+        self,
+    ) -> None:
+        # An indented continuation line of a loose list item is not a code
+        # block per CommonMark, even though it is indented by 4+ spaces and
+        # separated from the list marker by a blank line.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            (src / "concepts").mkdir(parents=True)
+            (src / "concepts" / "alpha.md").write_text(
+                "---\ntype: Minimal\n---\nAlpha\n", encoding="utf-8"
+            )
+            (src / "concepts" / "beta.md").write_text(
+                "---\ntype: Minimal\n---\nBeta\n", encoding="utf-8"
+            )
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Index\n\n"
+                "* [Alpha](concepts/alpha.md)\n\n"
+                "    * [Beta](concepts/beta.md)\n",
+                encoding="utf-8",
+            )
+
+            generate_content(src, dst)
+            _, body = load_generated(dst / "_index.md")
+
+            self.assertIn("* [Alpha](/concepts/alpha/)", body)
+            self.assertIn("* [Beta](/concepts/beta/)", body)
+
+    def test_rewrite_markdown_links_treats_indented_prose_continuation_as_prose(
+        self,
+    ) -> None:
+        # A nested list item whose own continuation is an indented prose
+        # paragraph, followed by a further indented sub-item, must not be
+        # mistaken for an indented code block either: the line right before
+        # the blank-line gap is itself indented continuation, not a bare
+        # list marker.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            (src / "concepts").mkdir(parents=True)
+            (src / "concepts" / "alpha.md").write_text(
+                "---\ntype: Minimal\n---\nAlpha\n", encoding="utf-8"
+            )
+            (src / "concepts" / "beta.md").write_text(
+                "---\ntype: Minimal\n---\nBeta\n", encoding="utf-8"
+            )
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Index\n\n"
+                "* [Alpha](concepts/alpha.md)\n\n"
+                "    Some prose continuation.\n\n"
+                "    * [Beta](concepts/beta.md)\n",
+                encoding="utf-8",
+            )
+
+            generate_content(src, dst)
+            _, body = load_generated(dst / "_index.md")
+
+            self.assertIn("* [Alpha](/concepts/alpha/)", body)
+            self.assertIn("* [Beta](/concepts/beta/)", body)
+
+    def test_producer_metadata_is_namespaced_under_params_okf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            src.mkdir()
+            (src / "alpha.md").write_text(
+                "---\n"
+                "type: Minimal\n"
+                "title: Alpha\n"
+                "description: An example concept.\n"
+                "draft: true\n"
+                "url: /somewhere-else/\n"
+                "resource: https://example.com\n"
+                "---\n"
+                "# Alpha\n",
+                encoding="utf-8",
+            )
+
+            generate_content(src, dst)
+            metadata, _ = load_generated(dst / "alpha.md")
+
+            self.assertEqual(metadata["title"], "Alpha")
+            self.assertEqual(metadata["description"], "An example concept.")
+            self.assertNotIn("draft", metadata)
+            self.assertNotIn("url", metadata)
+            self.assertNotIn("resource", metadata)
+            okf_params = metadata["params"]["okf"]
+            self.assertIs(okf_params["draft"], True)
+            self.assertEqual(okf_params["url"], "/somewhere-else/")
+            self.assertEqual(okf_params["resource"], "https://example.com")
+
 
 @unittest.skipUnless(shutil.which("hugo"), "hugo binary is not installed")
 class OkfHugoAdapterRealBuildTest(unittest.TestCase):
@@ -636,6 +815,39 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
             )
             self.assertIn("Foo page body.", foo_html)
             self.assertIn("Bar page body.", bar_html)
+
+    def test_producer_keys_shaped_like_hugo_fields_do_not_affect_publishing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "alpha.md").write_text(
+                "---\n"
+                "type: Minimal\n"
+                "draft: true\n"
+                "url: /somewhere-else/\n"
+                "build:\n"
+                "  render: never\n"
+                "headless: true\n"
+                "---\n"
+                "# Alpha\n\nAlpha body.\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            # A conformant concept carrying producer keys that happen to
+            # share names with Hugo-reserved front matter (draft, url,
+            # build, headless) must still publish at its normal permalink:
+            # none of those keys should reach Hugo's top-level front matter.
+            alpha_html = public / "concepts" / "alpha" / "index.html"
+            self.assertTrue(alpha_html.exists())
+            self.assertIn("Alpha body.", alpha_html.read_text(encoding="utf-8"))
+            self.assertFalse((public / "somewhere-else").exists())
 
 
 if __name__ == "__main__":

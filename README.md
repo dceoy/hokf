@@ -24,7 +24,10 @@ okf/  ── safe YAML adapter ──>  site/content/  ── Hugo ──>  site
 
 The adapter parses front matter with safe YAML loading, preserves nested and
 producer-defined metadata, tolerates unknown types, and retains the canonical
-type as Hugo's native content type.
+type as Hugo's native content type. Every other producer-defined field is
+namespaced under `params.okf` in the generated front matter (for example
+`resource` becomes `params.okf.resource`), so it cannot acquire unintended
+Hugo publishing semantics; templates read it back as `.Params.okf.<field>`.
 
 ## Quickstart
 

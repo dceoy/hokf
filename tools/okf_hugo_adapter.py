@@ -11,7 +11,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 try:
     from tools.okf_common import (
@@ -29,7 +29,13 @@ except ModuleNotFoundError:
     )
 
 
-MARKDOWN_LINK_RE = re.compile(r"(!?\[[^\]]*\])\(([^)\s]+)(\s+\"[^\"]*\")?\)")
+# CommonMark inline link: destination is either a bare run of non-whitespace,
+# non-paren characters or a `<...>`-wrapped form, and the optional title may
+# use double quotes, single quotes, or parentheses.
+MARKDOWN_LINK_RE = re.compile(
+    r'(!?\[[^\]]*\])\((<[^<>\n]*>|[^\s()]*)'
+    r'(\s+"[^"\n]*"|\s+\'[^\'\n]*\'|\s+\([^()\n]*\))?\)'
+)
 # CommonMark link reference definition: `[label]: target "title"`, optionally
 # indented up to 3 spaces, with the target optionally wrapped in `<...>`.
 REFERENCE_DEFINITION_RE = re.compile(
@@ -37,10 +43,10 @@ REFERENCE_DEFINITION_RE = re.compile(
     r'([ \t]+(?:"[^"\n]*"|\'[^\'\n]*\'|\([^)\n]*\)))?[ \t]*$',
     re.MULTILINE,
 )
-CODE_REGION_RE = re.compile(
-    r"^(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^(?P=fence)[ \t]*$|`[^`\n]+`",
-    re.MULTILINE | re.DOTALL,
-)
+INLINE_CODE_SPAN_RE = re.compile(r"`[^`\n]+`")
+FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
+INDENTED_LINE_RE = re.compile(r"^(?: {4}|\t)")
+LIST_MARKER_RE = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -200,11 +206,148 @@ def render_document(
     return rendered if rendered.endswith("\n") else f"{rendered}\n"
 
 
+# OKF concept fields that are intentionally mapped onto Hugo's own
+# top-level front matter meaning (page-kind dispatch, display title and
+# description). A tuple, not a set: dump_front_matter() writes keys in
+# insertion order, and a set's iteration order is salted per process, which
+# would make repeated `--check` runs across processes disagree on identical
+# input.
+HUGO_TOP_LEVEL_KEYS = ("type", "title", "description")
+
+
 def hugo_metadata(document: OkfDocument) -> dict[str, Any]:
     source_metadata = dict(document.metadata or {})
+    metadata: dict[str, Any] = {
+        key: source_metadata.pop(key)
+        for key in HUGO_TOP_LEVEL_KEYS
+        if key in source_metadata
+    }
     if document.is_reserved:
-        return {"type": "knowledge", **source_metadata}
-    return source_metadata
+        metadata["type"] = "knowledge"
+    if source_metadata:
+        # Namespace every other producer-defined key (including ones that
+        # look like Hugo-reserved fields such as draft/url/slug/build) under
+        # params.okf so it cannot acquire unintended Hugo publishing
+        # semantics; Hugo flattens a front-matter `params` table directly
+        # onto Page.Params, so this is read back as .Params.okf.<key>.
+        metadata["params"] = {"okf": source_metadata}
+    return metadata
+
+
+def find_code_spans(body: str) -> list[tuple[int, int]]:
+    """Return merged (start, end) byte spans of Markdown code regions.
+
+    Covers fenced code blocks (opening fence indented up to 3 spaces, a
+    closing fence of the same character with at least as many markers),
+    indented code blocks, and inline code spans, so link rewriting can skip
+    all of them. Indented-code detection intentionally backs off when the
+    line before the blank-line gap looks like a list marker, since indented
+    continuation of a list item is not a code block.
+    """
+    spans: list[tuple[int, int]] = []
+    lines = body.splitlines(keepends=True)
+    offsets: list[int] = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        offset += len(line)
+
+    n = len(lines)
+    prev_blank = True
+    last_nonblank_text = ""
+    i = 0
+    while i < n:
+        line = lines[i]
+        text = line.rstrip("\n")
+
+        fence_match = FENCE_OPEN_RE.match(text)
+        if fence_match:
+            fence_run = fence_match.group(1)
+            fence_char, fence_len = fence_run[0], len(fence_run)
+            close_re = re.compile(
+                rf"^[ \t]{{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*$"
+            )
+            j = i + 1
+            while j < n and not close_re.match(lines[j].rstrip("\n")):
+                j += 1
+            end_index = j if j < n else n - 1
+            spans.append((offsets[i], offsets[end_index] + len(lines[end_index])))
+            i = end_index + 1
+            prev_blank = False
+            last_nonblank_text = text
+            continue
+
+        if (
+            INDENTED_LINE_RE.match(line)
+            and prev_blank
+            and not LIST_MARKER_RE.match(last_nonblank_text)
+            and not INDENTED_LINE_RE.match(last_nonblank_text)
+        ):
+            last_content = i
+            j = i
+            while j < n:
+                if INDENTED_LINE_RE.match(lines[j]):
+                    last_content = j
+                    j += 1
+                    continue
+                if lines[j].strip("\n") == "":
+                    j += 1
+                    continue
+                break
+            spans.append(
+                (offsets[i], offsets[last_content] + len(lines[last_content]))
+            )
+            i = last_content + 1
+            prev_blank = False
+            last_nonblank_text = lines[last_content].rstrip("\n")
+            continue
+
+        if text.strip() != "":
+            last_nonblank_text = text
+        prev_blank = text.strip() == ""
+        i += 1
+
+    for match in INLINE_CODE_SPAN_RE.finditer(body):
+        spans.append((match.start(), match.end()))
+
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def unwrap_angle_brackets(target: str) -> str:
+    if target.startswith("<") and target.endswith(">"):
+        return target[1:-1]
+    return target
+
+
+def iter_link_targets(body: str) -> list[str]:
+    """Yield raw (unwrapped) destinations for inline links and reference-
+    style link definitions, skipping code regions. Shared by the adapter's
+    link rewriter and the validator's link/orphan checks so both inspect the
+    exact same Markdown link forms.
+    """
+    code_spans = find_code_spans(body)
+
+    def in_code(start: int, end: int) -> bool:
+        return any(start < c_end and end > c_start for c_start, c_end in code_spans)
+
+    targets = [
+        unwrap_angle_brackets(match.group(2))
+        for match in MARKDOWN_LINK_RE.finditer(body)
+        if not in_code(match.start(), match.end())
+    ]
+    targets.extend(
+        unwrap_angle_brackets(match.group(2))
+        for match in REFERENCE_DEFINITION_RE.finditer(body)
+        if not in_code(match.start(), match.end())
+    )
+    return targets
 
 
 def rewrite_markdown_links(
@@ -212,34 +355,51 @@ def rewrite_markdown_links(
     body: str,
     okf_paths: set[PurePosixPath],
 ) -> str:
-    def replace(match: re.Match[str]) -> str:
-        label, target, title = match.groups()
+    code_spans = find_code_spans(body)
+
+    def in_code(start: int, end: int) -> bool:
+        return any(start < c_end and end > c_start for c_start, c_end in code_spans)
+
+    def rewritten_replacement(
+        raw_target: str, build: Callable[[str], str]
+    ) -> str | None:
+        target = unwrap_angle_brackets(raw_target)
         rewritten = rewrite_link_target(source_relative_path, target, okf_paths)
         if rewritten == target:
-            return match.group(0)
-        return f"{label}({rewritten}{title or ''})"
-
-    def replace_reference_definition(match: re.Match[str]) -> str:
-        prefix, raw_target, title = match.groups()
+            return None
         bracketed = raw_target.startswith("<") and raw_target.endswith(">")
-        target = raw_target[1:-1] if bracketed else raw_target
-        rewritten = rewrite_link_target(source_relative_path, target, okf_paths)
-        if rewritten == target:
-            return match.group(0)
-        new_target = f"<{rewritten}>" if bracketed else rewritten
-        return f"{prefix}{new_target}{title or ''}"
+        return build(f"<{rewritten}>" if bracketed else rewritten)
 
-    def rewrite_segment(text: str) -> str:
-        text = MARKDOWN_LINK_RE.sub(replace, text)
-        return REFERENCE_DEFINITION_RE.sub(replace_reference_definition, text)
+    replacements: list[tuple[int, int, str]] = []
 
+    for match in MARKDOWN_LINK_RE.finditer(body):
+        if in_code(match.start(), match.end()):
+            continue
+        label, raw_target, title = match.groups()
+        replacement = rewritten_replacement(
+            raw_target, lambda new_target: f"{label}({new_target}{title or ''})"
+        )
+        if replacement is not None:
+            replacements.append((match.start(), match.end(), replacement))
+
+    for match in REFERENCE_DEFINITION_RE.finditer(body):
+        if in_code(match.start(), match.end()):
+            continue
+        prefix, raw_target, title = match.groups()
+        replacement = rewritten_replacement(
+            raw_target, lambda new_target: f"{prefix}{new_target}{title or ''}"
+        )
+        if replacement is not None:
+            replacements.append((match.start(), match.end(), replacement))
+
+    replacements.sort(key=lambda item: item[0])
     segments: list[str] = []
     cursor = 0
-    for code_match in CODE_REGION_RE.finditer(body):
-        segments.append(rewrite_segment(body[cursor : code_match.start()]))
-        segments.append(code_match.group(0))
-        cursor = code_match.end()
-    segments.append(rewrite_segment(body[cursor:]))
+    for start, end, replacement in replacements:
+        segments.append(body[cursor:start])
+        segments.append(replacement)
+        cursor = end
+    segments.append(body[cursor:])
     return "".join(segments)
 
 
@@ -266,11 +426,9 @@ def rewrite_link_target(
 
 
 def is_external_or_special_link(target: str) -> bool:
-    return (
-        "://" in target
-        or target.startswith(("#", "mailto:", "tel:", "{{"))
-        or target.startswith("<")
-    )
+    # Callers unwrap a `<...>`-bracketed destination before reaching this
+    # check, so target never itself starts with "<" here.
+    return "://" in target or target.startswith(("#", "mailto:", "tel:", "{{"))
 
 
 def split_link_suffix(target: str) -> tuple[str, str]:

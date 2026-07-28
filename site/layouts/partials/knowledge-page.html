@@ -6,35 +6,35 @@
       {{ if ne .File.ContentBaseName "log" }}
         <div><dt>OKF type</dt><dd>{{ .Type }}</dd></div>
       {{ end }}
-      {{ with .Params.status }}
+      {{ with .Params.okf.status }}
         <div><dt>Status</dt><dd>{{ . }}</dd></div>
       {{ end }}
-      {{ with .Params.stale_after }}
+      {{ with .Params.okf.stale_after }}
         <div><dt>Stale after</dt><dd>{{ . }}</dd></div>
       {{ end }}
-      {{ with .Params.resource }}
+      {{ with .Params.okf.resource }}
         <div>
           <dt>Resource</dt>
           <dd>{{ partial "resource-link.html" . }}</dd>
         </div>
       {{ end }}
-      {{ with .Params.generated }}
+      {{ with .Params.okf.generated }}
         <div><dt>Generated</dt><dd><code>{{ . | jsonify }}</code></dd></div>
       {{ else }}
-        {{ with .Params.timestamp }}
+        {{ with .Params.okf.timestamp }}
           <div><dt>Generated (legacy timestamp)</dt><dd>{{ . }}</dd></div>
         {{ end }}
       {{ end }}
-      {{ with .Params.verified }}
+      {{ with .Params.okf.verified }}
         <div><dt>Verified</dt><dd><code>{{ . | jsonify }}</code></dd></div>
       {{ end }}
     </dl>
-    {{ with .Params.tags }}{{ if reflect.IsSlice . }}
+    {{ with .Params.okf.tags }}{{ if reflect.IsSlice . }}
       <ul class="tags" aria-label="Tags">
         {{ range . }}<li>{{ . }}</li>{{ end }}
       </ul>
     {{ end }}{{ end }}
-    {{ with .Params.sources }}{{ if reflect.IsSlice . }}
+    {{ with .Params.okf.sources }}{{ if reflect.IsSlice . }}
       <section class="sources" aria-labelledby="sources-heading">
         <h2 id="sources-heading">Sources</h2>
         <ul>

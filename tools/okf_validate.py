@@ -16,7 +16,7 @@ from urllib.parse import unquote
 try:
     from tools.okf_common import FrontMatterError, OkfDocument, read_document
     from tools.okf_hugo_adapter import (
-        MARKDOWN_LINK_RE,
+        iter_link_targets,
         normalize_posix_path,
         split_link_suffix,
     )
@@ -27,7 +27,7 @@ except ModuleNotFoundError:
         read_document,
     )
     from okf_hugo_adapter import (  # type: ignore[no-redef]
-        MARKDOWN_LINK_RE,
+        iter_link_targets,
         normalize_posix_path,
         split_link_suffix,
     )
@@ -585,11 +585,10 @@ def validate_links(
     document: OkfDocument, paths: set[PurePosixPath]
 ) -> list[Finding]:
     findings = []
-    for match in MARKDOWN_LINK_RE.finditer(document.body):
-        target = match.group(2)
+    for target in iter_link_targets(document.body):
         if target.startswith(("http://", "https://", "mailto:", "tel:", "#", "{{")):
             continue
-        link_path, _ = split_link_suffix(unquote(target.strip("<>")))
+        link_path, _ = split_link_suffix(unquote(target))
         if not link_path:
             continue
         resolved = resolve_link_path(document.relative_path, link_path)
@@ -609,11 +608,10 @@ def resolve_document_links(
     document: OkfDocument, paths: set[PurePosixPath]
 ) -> set[PurePosixPath]:
     resolved_paths = set()
-    for match in MARKDOWN_LINK_RE.finditer(document.body):
-        target = match.group(2)
+    for target in iter_link_targets(document.body):
         if target.startswith(("http://", "https://", "mailto:", "tel:", "#", "{{")):
             continue
-        link_path, _ = split_link_suffix(unquote(target.strip("<>")))
+        link_path, _ = split_link_suffix(unquote(target))
         resolved = resolve_link_path(document.relative_path, link_path)
         if resolved in paths:
             resolved_paths.add(resolved)
