@@ -86,23 +86,26 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def find_symlinked_destination(dst: Path) -> Path | None:
-    """Check dst and its not-yet-existing ancestors for a symbolic link.
+    """Check every lexical component of dst, below a trusted base, for a symlink.
 
-    The walk stops at the first ancestor that already exists on disk: that
-    directory predates this invocation and is outside what it is creating,
-    so pre-existing symlinks further up the filesystem (for example a
-    system temp directory) are not flagged.
+    The trusted base is the working directory for a relative dst, or the
+    filesystem root for an absolute one; components at or above it are not
+    flagged. Every component of dst itself is checked regardless of whether
+    it (or the full destination) already exists, so a symlinked ancestor
+    cannot hide behind an already-existing resolved destination.
     """
-    current = dst.absolute()
-    while True:
+    if dst.is_absolute():
+        current = Path(dst.anchor)
+        remaining_parts = dst.parts[1:]
+    else:
+        current = Path.cwd()
+        remaining_parts = dst.parts
+
+    for part in remaining_parts:
+        current = current / part
         if current.is_symlink():
             return current
-        if current.exists():
-            return None
-        parent = current.parent
-        if parent == current:
-            return None
-        current = parent
+    return None
 
 
 def check_generated_content(src: Path, dst: Path) -> int:
@@ -128,6 +131,7 @@ def check_generated_content(src: Path, dst: Path) -> int:
 def generate_content(src: Path, dst: Path) -> int:
     documents = read_documents(src)
     okf_paths = {document.relative_path for document in documents}
+    check_output_collisions(documents)
     dst.mkdir(parents=True, exist_ok=True)
     resolved_dst = dst.resolve()
 
@@ -144,6 +148,36 @@ def generate_content(src: Path, dst: Path) -> int:
         output_path.write_text(render_document(document, okf_paths), encoding="utf-8")
 
     return len(documents)
+
+
+def check_output_collisions(documents: list[OkfDocument]) -> None:
+    """Reject documents whose generated file path or public permalink collide.
+
+    OKF only reserves index.md and log.md, so e.g. `_index.md` is a valid
+    concept filename that maps to the same generated path as `index.md`, and
+    `foo.md` / `foo/index.md` map to the same Hugo permalink. Detect both
+    before any destination file is created or overwritten.
+    """
+    by_output_path: dict[PurePosixPath, PurePosixPath] = {}
+    by_permalink: dict[str, PurePosixPath] = {}
+    for document in documents:
+        output_path = output_relative_path(document.relative_path)
+        existing = by_output_path.get(output_path)
+        if existing is not None:
+            raise FrontMatterError(
+                f"generated output path collision between {existing} and "
+                f"{document.relative_path}: both map to {output_path}"
+            )
+        by_output_path[output_path] = document.relative_path
+
+        permalink = public_url_for_okf_path(document.relative_path)
+        existing_permalink = by_permalink.get(permalink)
+        if existing_permalink is not None:
+            raise FrontMatterError(
+                f"generated permalink collision between {existing_permalink} "
+                f"and {document.relative_path}: both map to {permalink}"
+            )
+        by_permalink[permalink] = document.relative_path
 
 
 def render_document(

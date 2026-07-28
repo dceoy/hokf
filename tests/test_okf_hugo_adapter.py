@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from tools.okf_common import split_front_matter
+from tools.okf_common import FrontMatterError, split_front_matter
 from tools.okf_hugo_adapter import check_generated_content, generate_content, main
 
 
@@ -193,6 +193,90 @@ class OkfHugoAdapterTest(unittest.TestCase):
         self.assertEqual(metadata["on"], "keep")
         self.assertEqual(metadata["answer"], "yes")
         self.assertIs(metadata["flag"], True)
+
+    def test_front_matter_ignores_indented_delimiter_in_block_scalar(self) -> None:
+        metadata, body, present = split_front_matter(
+            "---\n"
+            "type: Minimal\n"
+            "note: |\n"
+            "  before\n"
+            "  ---\n"
+            "  after\n"
+            "---\n"
+            "Body\n"
+        )
+
+        self.assertTrue(present)
+        self.assertEqual(metadata["note"], "before\n---\nafter\n")
+        self.assertEqual(body, "Body\n")
+
+    def test_output_collision_between_index_and_underscore_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            src.mkdir()
+            (src / "index.md").write_text("---\ntype: Minimal\n---\n", encoding="utf-8")
+            (src / "_index.md").write_text("---\ntype: Minimal\n---\n", encoding="utf-8")
+
+            with self.assertRaises(FrontMatterError):
+                generate_content(src, dst)
+
+    def test_output_collision_between_nested_index_and_underscore_index(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            (src / "concepts").mkdir(parents=True)
+            (src / "concepts" / "index.md").write_text(
+                "---\ntype: Minimal\n---\n", encoding="utf-8"
+            )
+            (src / "concepts" / "_index.md").write_text(
+                "---\ntype: Minimal\n---\n", encoding="utf-8"
+            )
+
+            with self.assertRaises(FrontMatterError):
+                generate_content(src, dst)
+
+    def test_output_collision_between_leaf_and_nested_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            (src / "foo").mkdir(parents=True)
+            (src / "foo.md").write_text("---\ntype: Minimal\n---\n", encoding="utf-8")
+            (src / "foo" / "index.md").write_text(
+                "---\ntype: Minimal\n---\n", encoding="utf-8"
+            )
+
+            with self.assertRaises(FrontMatterError):
+                generate_content(src, dst)
+
+    def test_cli_rejects_symlinked_parent_when_target_already_has_content(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            src.mkdir()
+            (src / "index.md").write_text("# Index\n", encoding="utf-8")
+
+            target = root / "target"
+            (target / "content").mkdir(parents=True)
+            (target / "content" / "keep.txt").write_text("keep", encoding="utf-8")
+
+            site_link = root / "site"
+            site_link.symlink_to(target, target_is_directory=True)
+            dst = site_link / "content"
+
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit):
+                    main(["--src", str(src), "--dst", str(dst), "--clean"])
+
+            self.assertTrue(site_link.is_symlink())
+            self.assertTrue((target / "content" / "keep.txt").exists())
 
     def test_cli_rejects_symlinked_destination_before_clean(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -12,6 +12,7 @@ import yaml
 
 
 FRONT_MATTER_DELIMITER = "---"
+_CLOSING_DELIMITER_RE = re.compile(r"^---[ \t]*\r?\n?\Z")
 
 
 class FrontMatterError(ValueError):
@@ -99,7 +100,7 @@ def split_front_matter(markdown: str) -> tuple[dict[str, Any] | None, str, bool]
         (
             index
             for index, line in enumerate(lines[1:], start=1)
-            if line.strip() in {FRONT_MATTER_DELIMITER, "..."}
+            if _CLOSING_DELIMITER_RE.match(line)
         ),
         None,
     )
