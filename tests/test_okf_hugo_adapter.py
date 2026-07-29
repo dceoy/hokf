@@ -1886,6 +1886,35 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
             self.assertIn('href="/concepts/child/">the child</a>', parent_html)
             self.assertNotIn('href="child.md"', parent_html)
 
+    def test_reference_definition_in_sibling_list_item_resolves_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "- text\n"
+                "- [child-ref]: child.md\n\n"
+                "See [the child][child-ref].\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">the child</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
     def test_multiline_reference_definition_inside_block_quote_resolves_in_real_hugo_build(
         self,
     ) -> None:

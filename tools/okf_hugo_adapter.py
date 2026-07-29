@@ -1399,7 +1399,14 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
             active_content if active_content is not None else container_content
         )
 
-        if effective_tokens != prev_container_tokens:
+        if (
+            line_starts_list
+            or effective_tokens != prev_container_tokens
+        ):
+            # Every list marker starts a new item, even when a sibling uses
+            # the same marker width and therefore has identical container
+            # tokens. A sibling item cannot continue the preceding item's
+            # paragraph, so a definition at its start is eligible.
             paragraph_open = False
 
         definition = candidates_by_start_line.get(i)
