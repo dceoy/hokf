@@ -1764,6 +1764,97 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
             self.assertIn('href="/concepts/child/">the child</a>', parent_html)
             self.assertNotIn('href="child.md"', parent_html)
 
+    def test_reference_definition_interrupting_paragraph_stays_literal_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [broken][orphan-ref].\n"
+                "[orphan-ref]: child.md\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn('href="/concepts/child/"', parent_html)
+            self.assertIn("[orphan-ref]: child.md", parent_html)
+
+    def test_reference_definition_after_heading_resolves_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n"
+                "[child-ref]: child.md\n\n"
+                "See [the child][child-ref].\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">the child</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_consecutive_reference_definitions_resolve_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "sibling.md").write_text(
+                "---\ntype: Minimal\n---\n# Sibling\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [a][a-ref] and [b][b-ref].\n\n"
+                "[a-ref]:\n"
+                "  child.md\n"
+                "[b-ref]: sibling.md\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">a</a>', parent_html)
+            self.assertIn('href="/concepts/sibling/">b</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+            self.assertNotIn('href="sibling.md"', parent_html)
+
     def test_escaped_bracket_link_label_resolves_in_real_hugo_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "okf"

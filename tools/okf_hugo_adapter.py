@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import filecmp
 import html
 import html.entities
@@ -40,6 +41,15 @@ except ModuleNotFoundError:
 # offset (see find_reference_definition_candidates), so this intentionally
 # has no "^" anchor.
 REFERENCE_DEFINITION_CANDIDATE_RE = re.compile(r"[ \t]{0,3}\[")
+# A leaf block that closes at end-of-line, so no paragraph is left open for
+# find_paragraph_interruption_eligible_lines() to consider on the next line
+# (whether a "-"-only run is read as a thematic break or a setext underline,
+# both close whatever came before it, so that ambiguity does not matter
+# here).
+ATX_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}(?:[ \t]|$)")
+THEMATIC_BREAK_RE = re.compile(
+    r"^[ \t]{0,3}(?:(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})$"
+)
 BACKTICK_RUN_RE = re.compile(r"`+")
 INLINE_BLOCK_BREAK_RE = re.compile(r"\r?\n[ \t]*\r?\n")
 BLANK_LINE_RE = re.compile(r"(?:\r\n|\r|\n)[ \t]*(?:\r\n|\r|\n)")
@@ -1108,13 +1118,15 @@ def consume_link_title(body: str, cursor: int) -> int | None:
     return None
 
 
-def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
-    """Parse CommonMark link reference definitions used by the adapter.
+def _parse_reference_definitions_ignoring_paragraphs(
+    body: str,
+) -> list[ReferenceDefinition]:
+    """Parse every syntactically valid reference definition candidate.
 
-    The destination may start on the line after the label/colon, and an
-    optional title may start on the line after the destination. Exact source
-    whitespace is retained in prefix/suffix so rewriting changes only the
-    destination.
+    This does not yet enforce CommonMark's rule that a reference definition
+    cannot interrupt an open paragraph; iter_reference_definitions() applies
+    that filter afterwards, using these results to know where each candidate
+    ends.
     """
     definitions: list[ReferenceDefinition] = []
     for definition_start, after_colon, tokens in find_reference_definition_openers(
@@ -1166,6 +1178,109 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
             )
         )
     return definitions
+
+
+def find_paragraph_interruption_eligible_lines(body: str, reset_after_line: set[int]) -> list[bool]:
+    """Return, per physical line, whether a block starting there is eligible.
+
+    A line is eligible when no paragraph is open when it starts: the previous
+    line was blank, the active block-quote/list container just changed (a
+    freshly opened container always starts clean, even without a blank line),
+    or the line's index is in ``reset_after_line`` (it immediately follows a
+    reference definition, which - unlike ordinary text - never leaves a
+    paragraph open). Otherwise the previous line's non-blank content leaves a
+    paragraph open, and CommonMark reference definitions cannot interrupt it.
+    """
+    lines = body.splitlines(keepends=True)
+    eligible: list[bool] = []
+    active_list_tokens: tuple[tuple[str, int], ...] = ()
+    prev_container_tokens: tuple[tuple[str, int], ...] = ()
+    prev_blank = True
+    paragraph_open = False
+    for i, line in enumerate(lines):
+        text = line.rstrip("\r\n")
+        container_tokens, content_start = parse_block_container_prefix(text)
+        container_content = text[content_start:]
+        active_content = (
+            strip_block_container_prefix(text, active_list_tokens)
+            if active_list_tokens
+            else None
+        )
+        line_starts_list = any(kind == "list" for kind, _ in container_tokens)
+
+        if active_list_tokens and active_content is None:
+            if line_starts_list:
+                active_list_tokens = container_tokens
+            elif container_content.strip() != "" and prev_blank:
+                active_list_tokens = ()
+        elif active_list_tokens and active_content is not None:
+            nested_tokens, _ = parse_block_container_prefix(active_content)
+            if any(kind == "list" for kind, _ in nested_tokens):
+                active_list_tokens += nested_tokens
+        elif line_starts_list:
+            active_list_tokens = container_tokens
+
+        active_content = (
+            strip_block_container_prefix(text, active_list_tokens)
+            if active_list_tokens
+            else None
+        )
+        effective_tokens = (
+            active_list_tokens if active_content is not None else container_tokens
+        )
+        effective_content = (
+            active_content if active_content is not None else container_content
+        )
+
+        if i in reset_after_line or effective_tokens != prev_container_tokens:
+            paragraph_open = False
+        eligible.append(not paragraph_open)
+
+        stripped_content = effective_content.strip()
+        if stripped_content == "":
+            paragraph_open = False
+        elif ATX_HEADING_RE.match(effective_content) or THEMATIC_BREAK_RE.match(
+            effective_content
+        ):
+            paragraph_open = False
+        else:
+            paragraph_open = True
+        prev_blank = stripped_content == ""
+        prev_container_tokens = effective_tokens
+    return eligible
+
+
+def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
+    """Parse CommonMark link reference definitions used by the adapter.
+
+    The destination may start on the line after the label/colon, and an
+    optional title may start on the line after the destination. Exact source
+    whitespace is retained in prefix/suffix so rewriting changes only the
+    destination. A candidate is discarded when it would interrupt an already
+    open paragraph, which CommonMark does not permit for reference
+    definitions (unlike some other block types).
+    """
+    candidates = _parse_reference_definitions_ignoring_paragraphs(body)
+
+    offsets: list[int] = []
+    offset = 0
+    for line in body.splitlines(keepends=True):
+        offsets.append(offset)
+        offset += len(line)
+
+    reset_after_line = {
+        bisect.bisect_right(offsets, definition.end) - 1 + 1
+        for definition in candidates
+    }
+    eligible_at_line = find_paragraph_interruption_eligible_lines(
+        body, reset_after_line
+    )
+
+    return [
+        definition
+        for definition in candidates
+        if eligible_at_line[bisect.bisect_right(offsets, definition.start) - 1]
+    ]
 
 
 def iter_inline_links(body: str) -> list[InlineLink]:
