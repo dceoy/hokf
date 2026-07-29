@@ -99,7 +99,7 @@ class OkfHugoAdapterTest(unittest.TestCase):
             self.assertEqual(okf_params["okf_type"], "producer-owned-value")
             self.assertEqual(
                 okf_params["producer_extension"],
-                {"nested": ["one", {"two": 2}], "code": "0123"},
+                {"nested": ["one", {"two": 2}], "code": 123},
             )
             self.assertEqual(
                 okf_params["sources"][0]["signals"],
@@ -302,10 +302,11 @@ class OkfHugoAdapterTest(unittest.TestCase):
         self.assertEqual(metadata["on"], "keep")
         self.assertEqual(metadata["answer"], "yes")
         self.assertIs(metadata["flag"], True)
-        # YAML 1.2 core-schema decimal integers are either zero or begin with
-        # a non-zero digit, so a multi-digit leading-zero value stays a string.
-        self.assertEqual(metadata["code"], "0123")
-        self.assertEqual(metadata["negative_code"], "-0123")
+        # YAML 1.2 core-schema decimal integers match [-+]?[0-9]+, so a
+        # leading-zero value is decimal 123, not the YAML-1.1 octal
+        # reinterpretation (83).
+        self.assertEqual(metadata["code"], 123)
+        self.assertEqual(metadata["negative_code"], -123)
         # A colon-separated digit string does not match any core-schema
         # scalar tag, so it is preserved as a string, not the YAML-1.1
         # sexagesimal reinterpretation (754).
@@ -335,6 +336,43 @@ class OkfHugoAdapterTest(unittest.TestCase):
             with self.subTest(name=name):
                 with self.assertRaisesRegex(
                     FrontMatterError, "found duplicate key"
+                ):
+                    split_front_matter(markdown)
+
+    def test_front_matter_allows_distinct_scalar_typed_nested_keys(self) -> None:
+        metadata, _, present = split_front_matter(
+            "---\n"
+            "type: Minimal\n"
+            "extension:\n"
+            "  1: integer-key\n"
+            "  2: other-integer-key\n"
+            "---\n"
+        )
+
+        self.assertTrue(present)
+        self.assertEqual(
+            metadata["extension"], {1: "integer-key", 2: "other-integer-key"}
+        )
+
+    def test_front_matter_rejects_nested_keys_indistinguishable_once_constructed(
+        self,
+    ) -> None:
+        # `true`/`1` and `1`/`1.0` are distinct YAML nodes (different tags),
+        # so this is not a real duplicate key, but Python's `True == 1 == 1.0`
+        # means neither pair can be stored as two separate native dict keys.
+        examples = {
+            "bool-and-int": (
+                "---\ntype: Minimal\nextension:\n  true: boolean-key\n  1: integer-key\n---\n"
+            ),
+            "int-and-float": (
+                "---\ntype: Minimal\nextension:\n  1: integer-key\n  1.0: float-key\n---\n"
+            ),
+        }
+
+        for name, markdown in examples.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    FrontMatterError, "cannot be represented together"
                 ):
                     split_front_matter(markdown)
 
@@ -559,6 +597,34 @@ class OkfHugoAdapterTest(unittest.TestCase):
 
             self.assertTrue(link.is_symlink())
             self.assertTrue((target / "keep.txt").exists())
+
+    def test_generate_content_rejects_internal_destination_symlink_alias(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            dst = root / "content"
+            (src / "a").mkdir(parents=True)
+            (src / "b").mkdir(parents=True)
+            (src / "a" / "x.md").write_text(
+                "---\ntype: Minimal\n---\nAlpha\n", encoding="utf-8"
+            )
+            (src / "b" / "x.md").write_text(
+                "---\ntype: Minimal\n---\nBeta\n", encoding="utf-8"
+            )
+
+            (dst / "b").mkdir(parents=True)
+            (dst / "a").symlink_to(dst / "b", target_is_directory=True)
+
+            # "a" is a symlink to "b", both already inside dst.
+            # check_output_collisions() sees two distinct logical output
+            # paths (a/x.md and b/x.md), but resolving dst/a's parent only
+            # checks that it stays inside dst -- which dst/b does -- so
+            # writing through the symlink would silently alias both
+            # documents onto the same file on disk.
+            with self.assertRaises(FrontMatterError):
+                generate_content(src, dst)
 
     def test_rewrite_markdown_links_skips_code_regions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

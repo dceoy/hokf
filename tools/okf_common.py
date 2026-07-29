@@ -35,10 +35,17 @@ class _ProducerSafeLoader(yaml.SafeLoader):
             )
 
         mapping: dict[Any, Any] = {}
+        # YAML node equality is defined by tag *and* value, but Python
+        # equality conflates distinct scalar types (True == 1 == 1.0). Track
+        # duplicates by (tag, value) so only genuinely repeated keys are
+        # rejected as duplicates; a same-tag key never differs from `key` in
+        # native-value hashing, so this loses no real duplicate detection.
+        identities: set[tuple[str, Any]] = set()
         for key_node, value_node in node.value:
             key = self.construct_object(key_node, deep=deep)
+            identity = (key_node.tag, key)
             try:
-                duplicate = key in mapping
+                is_duplicate = identity in identities
             except TypeError as error:
                 raise yaml.constructor.ConstructorError(
                     "while constructing a mapping",
@@ -46,11 +53,23 @@ class _ProducerSafeLoader(yaml.SafeLoader):
                     "found an unhashable key",
                     key_node.start_mark,
                 ) from error
-            if duplicate:
+            if is_duplicate:
                 raise yaml.constructor.ConstructorError(
                     "while constructing a mapping",
                     node.start_mark,
                     f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            identities.add(identity)
+            if key in mapping:
+                # Not a duplicate (different tag), but Python cannot store
+                # both keys distinctly in a native dict either, e.g. a
+                # `true` key and a `1` key, or a `1` key and a `1.0` key.
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found mapping keys of different YAML types that "
+                    f"cannot be represented together: {key!r}",
                     key_node.start_mark,
                 )
             mapping[key] = self.construct_object(value_node, deep=deep)
@@ -59,10 +78,10 @@ class _ProducerSafeLoader(yaml.SafeLoader):
 
 # PyYAML's SafeLoader follows YAML 1.1, whose bool/int/timestamp resolvers
 # coerce or reinterpret bare producer-defined scalars: `on`/`yes` become
-# booleans, a leading-zero digit string like `0123` is read as octal (83),
-# a colon-separated digit string like `12:34` is read as sexagesimal (754),
-# and date-shaped strings become `date`/`datetime` objects. All of this
-# corrupts producer-defined values on an adapter read/write round trip.
+# booleans, a colon-separated digit string like `12:34` is read as
+# sexagesimal (754), and date-shaped strings become `date`/`datetime`
+# objects. All of this corrupts producer-defined values on an adapter
+# read/write round trip.
 # Replace every implicit resolver with just the YAML 1.2 core schema's
 # null/bool/int/float rules, so any scalar that does not match one of those
 # exact forms is preserved as a plain string.
@@ -79,7 +98,7 @@ _ProducerSafeLoader.add_implicit_resolver(
 )
 _ProducerSafeLoader.add_implicit_resolver(
     "tag:yaml.org,2002:int",
-    re.compile(r"^(?:[-+]?(?:0|[1-9][0-9]*)|0o[0-7]+|0x[0-9a-fA-F]+)$"),
+    re.compile(r"^(?:[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+)$"),
     list("-+0123456789"),
 )
 _ProducerSafeLoader.add_implicit_resolver(

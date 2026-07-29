@@ -260,21 +260,37 @@ def generate_content(src: Path, dst: Path) -> int:
     okf_paths = {document.relative_path for document in documents}
     check_output_collisions(documents)
     dst.mkdir(parents=True, exist_ok=True)
-    resolved_dst = dst.resolve()
 
     for document in documents:
-        output_path = dst / output_relative_path(document.relative_path)
+        relative_output = output_relative_path(document.relative_path)
+        reject_symlinked_output_component(dst, relative_output)
+        output_path = dst / relative_output
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        if (
-            not output_path.parent.resolve().is_relative_to(resolved_dst)
-            or output_path.is_symlink()
-        ):
-            raise FrontMatterError(
-                f"destination path escapes through a symbolic link: {output_path}"
-            )
         output_path.write_text(render_document(document, okf_paths), encoding="utf-8")
 
     return len(documents)
+
+
+def reject_symlinked_output_component(
+    dst: Path, relative_output: PurePosixPath
+) -> None:
+    """Reject a generated output path with a symlink at any component under dst.
+
+    Resolving the parent and checking ``is_relative_to(dst)`` only catches a
+    symlink that escapes dst entirely; a symlink to another directory still
+    inside dst (e.g. ``dst/a -> dst/b``) resolves to a path that also passes
+    that check, so two distinct source documents (``a/x.md`` and ``b/x.md``)
+    are treated as non-colliding by check_output_collisions() yet silently
+    alias the same file on disk. Check every component directly with
+    ``is_symlink()``, which reports the link itself rather than its target.
+    """
+    current = dst
+    for part in relative_output.parts:
+        current = current / part
+        if current.is_symlink():
+            raise FrontMatterError(
+                f"destination path escapes through a symbolic link: {current}"
+            )
 
 
 def check_output_collisions(documents: list[OkfDocument]) -> None:
