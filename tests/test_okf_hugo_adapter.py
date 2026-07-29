@@ -1855,6 +1855,162 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
             self.assertNotIn('href="child.md"', parent_html)
             self.assertNotIn('href="sibling.md"', parent_html)
 
+    def test_reference_definition_after_fenced_code_resolves_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "```text\n"
+                "example\n"
+                "```\n"
+                "[ref]: child.md\n"
+                "See [child][ref].\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">child</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_reference_definition_after_setext_heading_resolves_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "Parent\n"
+                "===\n"
+                "[ref]: child.md\n"
+                "See [child][ref].\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">child</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_reference_definition_after_indented_code_resolves_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "    example code\n"
+                "[ref]: child.md\n"
+                "See [child][ref].\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">child</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_reference_definition_after_html_block_resolves_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "<!-- comment -->\n"
+                "[ref]: child.md\n"
+                "See [child][ref].\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">child</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_reference_definition_after_rejected_candidate_stays_literal_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "sibling.md").write_text(
+                "---\ntype: Minimal\n---\n# Sibling\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [b][b].\n"
+                "[a]: child.md\n"
+                "[b]: sibling.md\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            # Neither candidate may interrupt the open paragraph started by
+            # "See [b][b].", including the second ("b") candidate: the first
+            # ("a") candidate is rejected too, so it must not reset the
+            # paragraph state that "b" is then checked against.
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn('href="/concepts/child/"', parent_html)
+            self.assertNotIn('href="/concepts/sibling/"', parent_html)
+            self.assertIn("[a]: child.md", parent_html)
+            self.assertIn("[b]: sibling.md", parent_html)
+
     def test_escaped_bracket_link_label_resolves_in_real_hugo_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "okf"

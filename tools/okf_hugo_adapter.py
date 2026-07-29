@@ -42,14 +42,20 @@ except ModuleNotFoundError:
 # has no "^" anchor.
 REFERENCE_DEFINITION_CANDIDATE_RE = re.compile(r"[ \t]{0,3}\[")
 # A leaf block that closes at end-of-line, so no paragraph is left open for
-# find_paragraph_interruption_eligible_lines() to consider on the next line
-# (whether a "-"-only run is read as a thematic break or a setext underline,
-# both close whatever came before it, so that ambiguity does not matter
-# here).
+# iter_reference_definitions() to consider on the next line (whether a
+# "-"-only run is read as a thematic break or a setext underline, both close
+# whatever came before it, so that ambiguity does not matter here).
 ATX_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}(?:[ \t]|$)")
 THEMATIC_BREAK_RE = re.compile(
     r"^[ \t]{0,3}(?:(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})$"
 )
+# A setext heading underline: one or more "=" (always H1) or "-" (always H2)
+# characters with no internal spaces. Only closes a paragraph when one is
+# actually open (see iter_reference_definitions()) - otherwise a bare "-" or
+# "=" run is ordinary paragraph text. "-" runs of 3+ are already covered by
+# THEMATIC_BREAK_RE above with the same result, so this only adds the "="
+# case and short "-"/"--" runs that are too short to be a thematic break.
+SETEXT_UNDERLINE_RE = re.compile(r"^[ \t]{0,3}(?:=+|-+)[ \t]*$")
 BACKTICK_RUN_RE = re.compile(r"`+")
 INLINE_BLOCK_BREAK_RE = re.compile(r"\r?\n[ \t]*\r?\n")
 BLANK_LINE_RE = re.compile(r"(?:\r\n|\r|\n)[ \t]*(?:\r\n|\r|\n)")
@@ -332,15 +338,17 @@ def hugo_metadata(document: OkfDocument) -> dict[str, Any]:
     return metadata
 
 
-def find_code_spans(body: str) -> list[tuple[int, int]]:
-    """Return merged (start, end) character spans of Markdown code regions.
+def find_code_block_spans(body: str) -> list[tuple[int, int]]:
+    """Return merged (start, end) character spans of fenced/indented code.
 
     Covers fenced code blocks (including fences nested in block quotes and
-    list items), indented code blocks, and inline code spans delimited by
-    equal-length backtick runs (including multiline spans), so link rewriting
-    can skip all of them. Active list-container indentation is retained across
-    blank lines so ordinary list continuations remain prose while content
-    indented four additional columns is recognized as a code block.
+    list items) and indented code blocks only, not inline code spans, so
+    callers that need to know where a leaf block closes (and therefore that
+    no paragraph is left open afterward) don't have to distinguish those
+    block-level spans from unrelated inline backtick runs. Active
+    list-container indentation is retained across blank lines so ordinary
+    list continuations remain prose while content indented four additional
+    columns is recognized as a code block.
     """
     spans: list[tuple[int, int]] = []
     lines = body.splitlines(keepends=True)
@@ -465,7 +473,18 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
         prev_blank = container_content.strip() == ""
         i += 1
 
-    block_spans = list(spans)
+    return merge_spans(spans)
+
+
+def find_code_spans(body: str) -> list[tuple[int, int]]:
+    """Return merged (start, end) character spans of Markdown code regions.
+
+    Covers everything find_code_block_spans() does plus inline code spans
+    delimited by equal-length backtick runs (including multiline spans), so
+    link rewriting can skip all of them.
+    """
+    block_spans = find_code_block_spans(body)
+    spans = list(block_spans)
 
     def in_block(start: int, end: int) -> bool:
         return any(
@@ -564,10 +583,16 @@ def html_block_start(
     return None
 
 
-def find_raw_html_spans(
+def find_html_block_spans(
     body: str, code_spans: list[tuple[int, int]]
 ) -> list[tuple[int, int]]:
-    """Return CommonMark HTML block and inline raw-HTML source ranges."""
+    """Return CommonMark HTML block source ranges (not inline raw HTML).
+
+    Kept separate from find_raw_html_spans() so callers that need to know
+    where a leaf block closes (and therefore that no paragraph is left open
+    afterward) don't have to distinguish these block-level spans from
+    unrelated inline raw-HTML tags.
+    """
     lines = body.splitlines(keepends=True)
     offsets: list[int] = []
     offset = 0
@@ -703,6 +728,14 @@ def find_raw_html_spans(
         prev_blank = False
         i = end_index + 1
 
+    return merge_spans(block_spans)
+
+
+def find_raw_html_spans(
+    body: str, code_spans: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """Return CommonMark HTML block and inline raw-HTML source ranges."""
+    block_spans = find_html_block_spans(body, code_spans)
     spans = list(block_spans)
     excluded = merge_spans(block_spans + code_spans)
     excluded_index = 0
@@ -1180,25 +1213,61 @@ def _parse_reference_definitions_ignoring_paragraphs(
     return definitions
 
 
-def find_paragraph_interruption_eligible_lines(body: str, reset_after_line: set[int]) -> list[bool]:
-    """Return, per physical line, whether a block starting there is eligible.
+def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
+    """Parse CommonMark link reference definitions used by the adapter.
 
-    A line is eligible when no paragraph is open when it starts: the previous
-    line was blank, the active block-quote/list container just changed (a
-    freshly opened container always starts clean, even without a blank line),
-    or the line's index is in ``reset_after_line`` (it immediately follows a
-    reference definition, which - unlike ordinary text - never leaves a
-    paragraph open). Otherwise the previous line's non-blank content leaves a
-    paragraph open, and CommonMark reference definitions cannot interrupt it.
+    The destination may start on the line after the label/colon, and an
+    optional title may start on the line after the destination. Exact source
+    whitespace is retained in prefix/suffix so rewriting changes only the
+    destination.
+
+    A candidate is discarded when it would interrupt an already open
+    paragraph, which CommonMark does not permit for reference definitions
+    (unlike some other block types). Acceptance and paragraph-interruption
+    eligibility are computed in one ordered, line-by-line pass so that only
+    an *accepted* definition can reset the paragraph state a later candidate
+    is checked against; a rejected candidate is left in place as ordinary
+    paragraph text like the rest of CommonMark's grammar requires. The same
+    pass also tracks other leaf blocks (fenced/indented code, HTML blocks,
+    setext headings) that close without a blank line, reusing
+    find_code_block_spans()/find_html_block_spans() so this doesn't
+    re-derive a third, possibly-diverging copy of that container/block
+    state machine.
     """
+    candidates = _parse_reference_definitions_ignoring_paragraphs(body)
+
     lines = body.splitlines(keepends=True)
-    eligible: list[bool] = []
+    n = len(lines)
+    offsets: list[int] = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        offset += len(line)
+
+    def line_index_of(char_offset: int) -> int:
+        return bisect.bisect_right(offsets, char_offset) - 1
+
+    candidates_by_start_line = {
+        line_index_of(definition.start): definition for definition in candidates
+    }
+
+    code_spans = find_code_spans(body)
+    leaf_block_spans = merge_spans(
+        find_code_block_spans(body) + find_html_block_spans(body, code_spans)
+    )
+    leaf_block_end_line_by_start_line = {
+        line_index_of(span_start): line_index_of(span_end - 1)
+        for span_start, span_end in leaf_block_spans
+    }
+
+    accepted: list[ReferenceDefinition] = []
     active_list_tokens: tuple[tuple[str, int], ...] = ()
     prev_container_tokens: tuple[tuple[str, int], ...] = ()
     prev_blank = True
     paragraph_open = False
-    for i, line in enumerate(lines):
-        text = line.rstrip("\r\n")
+    i = 0
+    while i < n:
+        text = lines[i].rstrip("\r\n")
         container_tokens, content_start = parse_block_container_prefix(text)
         container_content = text[content_start:]
         active_content = (
@@ -1232,9 +1301,25 @@ def find_paragraph_interruption_eligible_lines(body: str, reset_after_line: set[
             active_content if active_content is not None else container_content
         )
 
-        if i in reset_after_line or effective_tokens != prev_container_tokens:
+        if effective_tokens != prev_container_tokens:
             paragraph_open = False
-        eligible.append(not paragraph_open)
+
+        definition = candidates_by_start_line.get(i)
+        if definition is not None and not paragraph_open:
+            accepted.append(definition)
+            paragraph_open = False
+            prev_blank = False
+            prev_container_tokens = effective_tokens
+            i = line_index_of(definition.end) + 1
+            continue
+
+        leaf_block_end_line = leaf_block_end_line_by_start_line.get(i)
+        if leaf_block_end_line is not None:
+            paragraph_open = False
+            prev_blank = False
+            prev_container_tokens = effective_tokens
+            i = leaf_block_end_line + 1
+            continue
 
         stripped_content = effective_content.strip()
         if stripped_content == "":
@@ -1243,44 +1328,15 @@ def find_paragraph_interruption_eligible_lines(body: str, reset_after_line: set[
             effective_content
         ):
             paragraph_open = False
+        elif paragraph_open and SETEXT_UNDERLINE_RE.match(effective_content):
+            paragraph_open = False
         else:
             paragraph_open = True
         prev_blank = stripped_content == ""
         prev_container_tokens = effective_tokens
-    return eligible
+        i += 1
 
-
-def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
-    """Parse CommonMark link reference definitions used by the adapter.
-
-    The destination may start on the line after the label/colon, and an
-    optional title may start on the line after the destination. Exact source
-    whitespace is retained in prefix/suffix so rewriting changes only the
-    destination. A candidate is discarded when it would interrupt an already
-    open paragraph, which CommonMark does not permit for reference
-    definitions (unlike some other block types).
-    """
-    candidates = _parse_reference_definitions_ignoring_paragraphs(body)
-
-    offsets: list[int] = []
-    offset = 0
-    for line in body.splitlines(keepends=True):
-        offsets.append(offset)
-        offset += len(line)
-
-    reset_after_line = {
-        bisect.bisect_right(offsets, definition.end) - 1 + 1
-        for definition in candidates
-    }
-    eligible_at_line = find_paragraph_interruption_eligible_lines(
-        body, reset_after_line
-    )
-
-    return [
-        definition
-        for definition in candidates
-        if eligible_at_line[bisect.bisect_right(offsets, definition.start) - 1]
-    ]
+    return accepted
 
 
 def iter_inline_links(body: str) -> list[InlineLink]:
