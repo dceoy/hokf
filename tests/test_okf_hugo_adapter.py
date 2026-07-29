@@ -947,6 +947,32 @@ class OkfHugoAdapterTest(unittest.TestCase):
         self.assertEqual(rewritten, "See [the\nchild](/concepts/child/).\n")
         self.assertEqual(iter_link_targets(body), ["child.md"])
 
+    def test_rewrite_markdown_links_handles_separate_links_across_paragraphs(
+        self,
+    ) -> None:
+        body = "See [child](child.md).\n\nAnother [child](child.md).\n"
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/child.md"),
+            },
+        )
+
+        self.assertEqual(
+            rewritten,
+            "See [child](/concepts/child/).\n\n"
+            "Another [child](/concepts/child/).\n",
+        )
+        self.assertEqual(iter_link_targets(body), ["child.md", "child.md"])
+
+    def test_inline_link_label_does_not_span_a_blank_line(self) -> None:
+        body = "[not a label\n\n](child.md)\n"
+
+        self.assertEqual(iter_link_targets(body), [])
+
     def test_rewrite_markdown_links_skips_indented_code_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1583,6 +1609,159 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertIn('href="/concepts/child/">see [child]</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_innermost_nested_link_resolves_in_real_hugo_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "other.md").write_text(
+                "---\ntype: Minimal\n---\n# Other\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [outer [inner](child.md)](other.md).\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            # CommonMark disallows links within links: the innermost
+            # `[inner](child.md)` is the only real link, and the outer
+            # `[outer ...](other.md)` remains literal text around it.
+            # (Goldmark inserts a soft line break before the trailing `]` in
+            # this construct; the assertions below tolerate that.)
+            self.assertIn('[outer <a href="/concepts/child/">inner</a>', parent_html)
+            self.assertIn("](other.md)", parent_html)
+            self.assertNotIn('href="other.md"', parent_html)
+            self.assertNotIn('href="/concepts/other/"', parent_html)
+
+    def test_image_nested_in_link_label_resolves_outer_link_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "target.md").write_text(
+                "---\ntype: Minimal\n---\n# Target\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "[![badge](badge.svg)](target.md)\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            # An image does not disable an enclosing link in CommonMark, so
+            # the outer link must still resolve and the image destination is
+            # left untouched (it does not point at an OKF document).
+            self.assertIn(
+                '<a href="/concepts/target/"><img src="badge.svg" alt="badge">'
+                "</a>",
+                parent_html,
+            )
+
+    def test_reference_definition_inside_block_quote_resolves_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [the child][child-ref].\n\n"
+                "> [child-ref]: child.md\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">the child</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_reference_definition_inside_list_item_resolves_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [the child][child-ref].\n\n"
+                "- [child-ref]: child.md\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">the child</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_multiline_reference_definition_inside_block_quote_resolves_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [the child][child-ref].\n\n"
+                "> [child-ref]:\n"
+                "> child.md\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">the child</a>', parent_html)
             self.assertNotIn('href="child.md"', parent_html)
 
     def test_escaped_bracket_link_label_resolves_in_real_hugo_build(self) -> None:

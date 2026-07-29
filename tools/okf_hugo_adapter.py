@@ -35,8 +35,11 @@ except ModuleNotFoundError:
 
 
 # CommonMark link reference definition candidate, optionally indented up to
-# 3 spaces. Labels, destinations, and titles are parsed structurally below.
-REFERENCE_DEFINITION_CANDIDATE_RE = re.compile(r"^[ \t]{0,3}\[", re.MULTILINE)
+# 3 spaces past a line's block-container prefix. Labels, destinations, and
+# titles are parsed structurally below. Matched per line at a specific
+# offset (see find_reference_definition_candidates), so this intentionally
+# has no "^" anchor.
+REFERENCE_DEFINITION_CANDIDATE_RE = re.compile(r"[ \t]{0,3}\[")
 BACKTICK_RUN_RE = re.compile(r"`+")
 INLINE_BLOCK_BREAK_RE = re.compile(r"\r?\n[ \t]*\r?\n")
 BLANK_LINE_RE = re.compile(r"(?:\r\n|\r|\n)[ \t]*(?:\r\n|\r|\n)")
@@ -803,74 +806,157 @@ def unwrap_angle_brackets(target: str) -> str:
     return target
 
 
-def find_inline_link_openers(body: str) -> list[tuple[int, int]]:
-    """Locate `[`/`![` openers whose balanced CommonMark label is followed by
-    "(".
-
-    Nested brackets (`[see [child]](child.md)`) and backslash-escaped
-    delimiters (`[child \\]](child.md)`) inside the label are honored, since a
-    regular expression cannot track bracket depth. Soft line endings are
-    allowed inside labels, but blank lines terminate the candidate.
-
-    Returns (label_start, destination_start) pairs, where label_start is the
-    index of the optional "!" or the "[", and destination_start is the index
-    just after the "(" that must immediately follow the closing "]".
+def parse_inline_link_tail(
+    body: str, label_start: int, destination_start: int
+) -> InlineLink | None:
+    """Parse the destination/title/")" following a "](" and build an
+    InlineLink, or return None if no valid inline link tail follows.
     """
-    openers: list[tuple[int, int]] = []
+    cursor = consume_link_whitespace(body, destination_start)
+    target_start = cursor
+    target_end = consume_link_destination(body, cursor)
+    if target_end is None:
+        return None
+    cursor = target_end
+    whitespace_start = cursor
+    cursor = consume_link_whitespace(body, cursor)
+
+    if cursor > whitespace_start and cursor < len(body) and body[cursor] != ")":
+        title_end = consume_link_title(body, cursor)
+        if title_end is None:
+            return None
+        cursor = title_end
+        cursor = consume_link_whitespace(body, cursor)
+
+    if cursor >= len(body) or body[cursor] != ")":
+        return None
+
+    return InlineLink(
+        start=label_start,
+        end=cursor + 1,
+        prefix=body[label_start:target_start],
+        raw_target=body[target_start:target_end],
+        suffix=body[target_end : cursor + 1],
+    )
+
+
+def find_inline_link_openers(body: str) -> list[InlineLink]:
+    """Locate and parse CommonMark inline links and images.
+
+    Brackets are tracked with a stack so a "]" always matches the nearest
+    unmatched "[", per CommonMark's bracket-matching algorithm. When a "["
+    (not "![") successfully forms a link, every older still-open "[" is
+    deactivated so it cannot itself become a link, which is what makes
+    `[outer [inner](child.md)](other.md)` resolve to the innermost link only.
+    Images do not deactivate older openers, since `[![badge](badge.svg)]
+    (target.md)` is a real link around a real image in CommonMark. Nested
+    brackets (`[see [child]](child.md)`) and backslash-escaped delimiters
+    (`[child \\]](child.md)`) inside a label are honored. Soft line endings
+    are allowed inside labels, but a blank line invalidates any label
+    currently open across it.
+    """
+    links: list[InlineLink] = []
     length = len(body)
+    stack: list[dict[str, Any]] = []
     index = 0
     while index < length:
         char = body[index]
         if char == "\\" and index + 1 < length:
             index += 2
             continue
-        if char != "[":
+        if char in "\r\n":
+            if BLANK_LINE_RE.match(body, index):
+                for entry in stack:
+                    entry["active"] = False
+            next_line = consume_line_ending(body, index)
+            assert next_line is not None
+            index = next_line
+            continue
+        if char == "[":
+            label_start = (
+                index - 1 if index > 0 and body[index - 1] == "!" else index
+            )
+            stack.append(
+                {
+                    "label_start": label_start,
+                    "is_image": label_start != index,
+                    "active": True,
+                }
+            )
             index += 1
             continue
-
-        label_start = index - 1 if index > 0 and body[index - 1] == "!" else index
-        depth = 0
-        cursor = index
-        closed_at = -1
-        while cursor < length:
-            inner = body[cursor]
-            if inner == "\\" and cursor + 1 < length:
-                cursor += 2
+        if char == "]":
+            if not stack:
+                index += 1
                 continue
-            if inner in "\r\n":
-                if BLANK_LINE_RE.match(body, cursor):
-                    break
-                next_line = consume_line_ending(body, cursor)
-                assert next_line is not None
-                cursor = next_line
-                continue
-            if inner == "[":
-                depth += 1
-            elif inner == "]":
-                depth -= 1
-                if depth == 0:
-                    closed_at = cursor
-                    break
-            cursor += 1
-
-        if closed_at != -1 and closed_at + 1 < length and body[closed_at + 1] == "(":
-            openers.append((label_start, closed_at + 2))
-            index = closed_at + 2
+            entry = stack.pop()
+            if (
+                entry["active"]
+                and index + 1 < length
+                and body[index + 1] == "("
+            ):
+                link = parse_inline_link_tail(body, entry["label_start"], index + 2)
+                if link is not None:
+                    links.append(link)
+                    if not entry["is_image"]:
+                        for older in stack:
+                            older["active"] = False
+                    index = link.end
+                    continue
+            index += 1
             continue
         index += 1
-    return openers
+
+    links.sort(key=lambda link: link.start)
+    kept: list[InlineLink] = []
+    for link in links:
+        if any(
+            other.start <= link.start and link.end <= other.end and other is not link
+            for other in links
+        ):
+            continue
+        kept.append(link)
+    return kept
 
 
-def find_reference_definition_openers(body: str) -> list[tuple[int, int]]:
-    """Locate CommonMark reference labels and return (start, after-colon).
+def find_reference_definition_candidates(
+    body: str,
+) -> list[tuple[int, int, tuple[tuple[str, int], ...]]]:
+    """Return (definition_start, label_start, container_tokens) per line.
+
+    CommonMark parses link reference definitions inside block quotes and
+    list items and applies them to the whole document, so a candidate may be
+    preceded by a block-container prefix in addition to up to 3 spaces.
+    """
+    candidates: list[tuple[int, int, tuple[tuple[str, int], ...]]] = []
+    offset = 0
+    for line in body.splitlines(keepends=True):
+        text = line.rstrip("\r\n")
+        tokens, content_start = parse_block_container_prefix(text)
+        match = REFERENCE_DEFINITION_CANDIDATE_RE.match(text, content_start)
+        if match is not None:
+            candidates.append(
+                (offset + match.start(), offset + match.end() - 1, tokens)
+            )
+        offset += len(line)
+    return candidates
+
+
+def find_reference_definition_openers(
+    body: str,
+) -> list[tuple[int, int, tuple[tuple[str, int], ...]]]:
+    """Locate CommonMark reference labels; return (start, after-colon, tokens).
 
     Reference labels may contain backslash-escaped punctuation and one line
     ending, but not an unescaped opening bracket or an empty/whitespace-only
-    label.
+    label. ``tokens`` is the opening line's block-container prefix, used to
+    recognize repeated prefixes on any destination/title continuation line.
     """
-    openers: list[tuple[int, int]] = []
-    for match in REFERENCE_DEFINITION_CANDIDATE_RE.finditer(body):
-        cursor = match.end()
+    openers: list[tuple[int, int, tuple[tuple[str, int], ...]]] = []
+    for definition_start, label_start, tokens in find_reference_definition_candidates(
+        body
+    ):
+        cursor = label_start + 1
         label_characters = 0
         has_non_whitespace = False
         line_endings = 0
@@ -894,7 +980,7 @@ def find_reference_definition_openers(body: str) -> list[tuple[int, int]]:
                     and cursor + 1 < len(body)
                     and body[cursor + 1] == ":"
                 ):
-                    openers.append((match.start(), cursor + 2))
+                    openers.append((definition_start, cursor + 2, tokens))
                 break
             if char in "\r\n":
                 if line_endings == 1:
@@ -943,6 +1029,28 @@ def consume_line_ending(body: str, cursor: int) -> int | None:
     if body[cursor] == "\r" and cursor + 1 < len(body) and body[cursor + 1] == "\n":
         return cursor + 2
     return cursor + 1
+
+
+def consume_reference_definition_line_ending(
+    body: str, cursor: int, tokens: tuple[tuple[str, int], ...]
+) -> int | None:
+    """Consume a line ending, requiring a repeat of ``tokens`` if non-empty.
+
+    A reference definition opened inside a block quote or list item must
+    repeat that container's prefix on its destination/title continuation
+    lines; otherwise those lines belong to a different block and the
+    destination must not be scanned across the boundary.
+    """
+    next_line = consume_line_ending(body, cursor)
+    if next_line is None or not tokens:
+        return next_line
+    line_end = next_line
+    while line_end < len(body) and body[line_end] not in "\r\n":
+        line_end += 1
+    stripped = strip_block_container_prefix(body[next_line:line_end], tokens)
+    if stripped is None:
+        return None
+    return line_end - len(stripped)
 
 
 def consume_link_destination(body: str, cursor: int) -> int | None:
@@ -1009,9 +1117,11 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
     destination.
     """
     definitions: list[ReferenceDefinition] = []
-    for definition_start, after_colon in find_reference_definition_openers(body):
+    for definition_start, after_colon, tokens in find_reference_definition_openers(
+        body
+    ):
         cursor = consume_spaces_and_tabs(body, after_colon)
-        next_line = consume_line_ending(body, cursor)
+        next_line = consume_reference_definition_line_ending(body, cursor, tokens)
         if next_line is not None:
             cursor = consume_spaces_and_tabs(body, next_line)
 
@@ -1029,7 +1139,9 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
         )
 
         if title_end is None:
-            next_line = consume_line_ending(body, same_line_end)
+            next_line = consume_reference_definition_line_ending(
+                body, same_line_end, tokens
+            )
             if next_line is not None:
                 candidate = consume_spaces_and_tabs(body, next_line)
                 title_start = candidate
@@ -1059,43 +1171,11 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
 def iter_inline_links(body: str) -> list[InlineLink]:
     """Parse inline link destinations and titles needed for safe rewriting.
 
-    Label boundaries come from find_inline_link_openers(); the destination
-    and optional title are scanned character by character so balanced
-    parentheses, escaped delimiters, multiline titles, and the spaces, tabs,
-    or single line ending permitted between components are handled
-    consistently with CommonMark.
+    find_inline_link_openers() does the full CommonMark bracket-matching and
+    destination/title parsing; this only exists as the stable name the rest
+    of the adapter calls.
     """
-    links: list[InlineLink] = []
-    for label_start, cursor in find_inline_link_openers(body):
-        cursor = consume_link_whitespace(body, cursor)
-        target_start = cursor
-        target_end = consume_link_destination(body, cursor)
-        if target_end is None:
-            continue
-        cursor = target_end
-        whitespace_start = cursor
-        cursor = consume_link_whitespace(body, cursor)
-
-        if cursor > whitespace_start and cursor < len(body) and body[cursor] != ")":
-            title_end = consume_link_title(body, cursor)
-            if title_end is None:
-                continue
-            cursor = title_end
-            cursor = consume_link_whitespace(body, cursor)
-
-        if cursor >= len(body) or body[cursor] != ")":
-            continue
-
-        links.append(
-            InlineLink(
-                start=label_start,
-                end=cursor + 1,
-                prefix=body[label_start:target_start],
-                raw_target=body[target_start:target_end],
-                suffix=body[target_end : cursor + 1],
-            )
-        )
-    return links
+    return find_inline_link_openers(body)
 
 
 def iter_link_targets(body: str) -> list[str]:
