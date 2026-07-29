@@ -1657,6 +1657,13 @@ def decode_commonmark_link_path(raw_path: str) -> str:
 
     This intentionally operates only on the path component selected by
     split_link_suffix(), leaving the query and fragment payload untouched.
+    """
+    return unquote(decode_commonmark_link_syntax(raw_path))
+
+
+def decode_commonmark_link_syntax(raw_path: str) -> str:
+    """Decode CommonMark escapes and references without percent-decoding.
+
     A single pass is required because an escaped ampersand (``\\&amp;``) is
     literal text, not the start of a character reference.
     """
@@ -1683,7 +1690,7 @@ def decode_commonmark_link_path(raw_path: str) -> str:
                     continue
         decoded.append(char)
         cursor += 1
-    return unquote("".join(decoded))
+    return "".join(decoded)
 
 
 GENERIC_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -1704,11 +1711,11 @@ def is_external_or_special_link(target: str) -> bool:
     ):
         return True
     raw_path, _ = split_link_suffix(target)
-    decoded_path = decode_commonmark_link_path(raw_path)
+    commonmark_path = decode_commonmark_link_syntax(raw_path)
     return (
-        "://" in decoded_path
-        or decoded_path.startswith(("mailto:", "tel:", "{{"))
-        or bool(GENERIC_URI_SCHEME_RE.match(decoded_path))
+        "://" in commonmark_path
+        or commonmark_path.startswith(("mailto:", "tel:", "{{"))
+        or bool(GENERIC_URI_SCHEME_RE.match(commonmark_path))
     )
 
 

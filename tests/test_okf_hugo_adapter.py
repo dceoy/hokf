@@ -2310,6 +2310,22 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
 
         self.assertEqual(rewritten, body)
 
+    def test_percent_encoded_colon_remains_bundle_relative(self) -> None:
+        # Percent-decoding is required to find the OKF path, but an encoded
+        # colon does not create an absolute URI scheme during URL parsing.
+        body = "See [manual](manual%3Av2.md).\n"
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/manual:v2.md"),
+            },
+        )
+
+        self.assertEqual(rewritten, "See [manual](/concepts/manual%3Av2/).\n")
+
     def test_reference_label_text_may_contain_a_code_span(self) -> None:
         # Content elsewhere in a reference-style link's text may legitimately
         # overlap a code span without invalidating the link, mirroring

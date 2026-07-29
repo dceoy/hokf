@@ -254,6 +254,28 @@ class OkfValidateTest(unittest.TestCase):
             self.assertNotIn("index", warning_subjects)
             self.assertIn("link:concepts/missing(v2).md", warning_subjects)
 
+    def test_percent_encoded_colon_link_is_validated_as_bundle_relative(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n"
+                "# Concepts\n\n"
+                "[Missing](manual%3Av2.md)\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            warning_subjects = {
+                finding.subject
+                for finding in findings
+                if finding.severity == "WARNING"
+            }
+
+            self.assertIn("link:manual%3Av2.md", warning_subjects)
+
     def test_commonmark_escaped_and_entity_links_share_adapter_resolution(
         self,
     ) -> None:
