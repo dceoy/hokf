@@ -2242,6 +2242,32 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
 
         self.assertEqual(iter_link_targets(body), [])
 
+    def test_inline_link_label_is_not_a_reference_use(self) -> None:
+        # CommonMark renders only the external inline link here; the
+        # reference definition sharing the same label text has no
+        # [text][label]/[label] use anywhere, so it must not be exposed as
+        # a validated link target.
+        body = "[orphan](https://example.com)\n\n[orphan]: concepts/orphan.md\n"
+
+        self.assertEqual(iter_link_targets(body), ["https://example.com"])
+
+    def test_code_span_shortcut_lookalike_is_not_a_reference_use(self) -> None:
+        # A shortcut-reference-shaped code span renders as literal code, not
+        # a reference use, so the definition sharing its label must not be
+        # exposed as a validated link target.
+        body = "See `[orphan]` for details.\n\n[orphan]: concepts/orphan.md\n"
+
+        self.assertEqual(iter_link_targets(body), [])
+
+    def test_reference_label_text_may_contain_a_code_span(self) -> None:
+        # Content elsewhere in a reference-style link's text may legitimately
+        # overlap a code span without invalidating the link, mirroring
+        # link_syntax_excluded's precedent for inline links; only a
+        # delimiter actually inside the code span should disqualify a match.
+        body = "See [the `child` thing][ref].\n\n[ref]: child.md\n"
+
+        self.assertEqual(iter_link_targets(body), ["child.md"])
+
     def test_duplicate_reference_label_uses_first_definition_only(self) -> None:
         # CommonMark resolves a reference-style use against the *first*
         # matching definition; a later definition with the same

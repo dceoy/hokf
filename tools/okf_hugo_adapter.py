@@ -1393,20 +1393,53 @@ def first_definition_wins(
 
 
 def find_used_reference_labels(
-    body: str, reference_definitions: list[ReferenceDefinition]
+    body: str,
+    reference_definitions: list[ReferenceDefinition],
+    excluded_spans: list[tuple[int, int]],
+    inline_links: list[InlineLink],
 ) -> set[str]:
     """Conservatively collect normalized labels used by a reference-style
     link/image: full ``[text][label]``, collapsed ``[text][]``, or shortcut
     ``[label]``. This intentionally skips CommonMark's full bracket/
-    precedence resolution (nested brackets, code-span/raw-HTML exclusion):
-    over-counting a bracketed phrase as a "use" is harmless, since it only
-    falls back to today's behavior of treating the definition as used;
-    under-counting could wrongly hide a real link, so matches are excluded
-    only when they fall inside a reference definition itself (otherwise
-    every "[label]:" definition would trivially count as a use of its own
-    label).
+    precedence resolution for nested brackets: over-counting a bracketed
+    phrase as a "use" is harmless, since it only falls back to today's
+    behavior of treating the definition as used; under-counting could
+    wrongly hide a real link. Matches are excluded when they fall inside a
+    reference definition itself (otherwise every "[label]:" definition
+    would trivially count as a use of its own label), when one of the
+    bracket *delimiters* -- not the whole label -- sits inside a code span
+    or raw HTML span (a code-span lookalike such as `` `[orphan]` `` is not
+    a reference use, but content elsewhere in the label may legitimately
+    overlap a code span, e.g. ``[the `child` thing][ref]``, mirroring
+    link_syntax_excluded's precedent for inline links), or when the match is
+    a shortcut ``[label]`` immediately followed by the "(" of a real inline
+    link (the label of ``[orphan](target)`` is not itself a shortcut
+    reference use).
     """
     definition_spans = [(d.start, d.end) for d in reference_definitions]
+
+    def excluded(start: int, end: int) -> bool:
+        return any(
+            start < span_end and end > span_start
+            for span_start, span_end in excluded_spans
+        )
+
+    def is_inline_link_opener(label_start: int, label_end: int) -> bool:
+        """True when [label_start, label_end) is exactly the label bracket
+        span of some inline link's "[label](" opener -- i.e. label_end is
+        immediately followed by the "(" belonging to a parsed InlineLink
+        whose own opening bracket (skipping a leading "!" on images) sits at
+        label_start.
+        """
+        for link in inline_links:
+            paren = link.start + link.prefix.rfind("(")
+            if label_end != paren:
+                continue
+            opener = link.start + 1 if link.prefix.startswith("!") else link.start
+            if label_start == opener:
+                return True
+        return False
+
     used: set[str] = set()
     for match in REFERENCE_USE_RE.finditer(body):
         if any(
@@ -1414,7 +1447,22 @@ def find_used_reference_labels(
             for d_start, d_end in definition_spans
         ):
             continue
-        text, explicit_label = match.group(1), match.group(2)
+
+        text_start, text_end = match.start(1), match.end(1)
+        if excluded(match.start(), text_start) or excluded(text_end, text_end + 1):
+            continue
+
+        explicit_label = match.group(2)
+        if explicit_label is not None:
+            label_start, label_end = match.start(2), match.end(2)
+            if excluded(label_start - 1, label_start) or excluded(
+                label_end, label_end + 1
+            ):
+                continue
+        elif is_inline_link_opener(match.start(), match.end()):
+            continue
+
+        text = match.group(1)
         normalized = normalize_reference_label(explicit_label or text)
         if normalized:
             used.add(normalized)
@@ -1467,13 +1515,16 @@ def iter_link_targets(body: str) -> list[str]:
             for definition in reference_definitions
         )
 
+    inline_links = iter_inline_links(body)
     targets = [
         unwrap_angle_brackets(link.raw_target)
-        for link in iter_inline_links(body)
+        for link in inline_links
         if not link_syntax_excluded(link, excluded_spans)
         and not in_reference_definition(link.start, link.end)
     ]
-    used_labels = find_used_reference_labels(body, reference_definitions)
+    used_labels = find_used_reference_labels(
+        body, reference_definitions, excluded_spans, inline_links
+    )
     targets.extend(
         unwrap_angle_brackets(definition.raw_target)
         for definition in first_definition_wins(reference_definitions).values()
