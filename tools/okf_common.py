@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""Shared parsing helpers for Open Knowledge Format Markdown."""
+
+from __future__ import annotations
+
+import math
+import re
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+import yaml
+
+
+FRONT_MATTER_DELIMITER = "---"
+_FRONT_MATTER_DELIMITER_RE = re.compile(r"^---[ \t]*\r?\n?\Z")
+_YAML_FLOAT_TAG = "tag:yaml.org,2002:float"
+
+
+class FrontMatterError(ValueError):
+    """Raised when a YAML front matter block cannot be parsed."""
+
+
+def _mapping_key_identity(key_node: yaml.Node, key: Any) -> tuple[str, Any]:
+    """Return a stable YAML key identity before native-dict comparison."""
+    if (
+        key_node.tag == _YAML_FLOAT_TAG
+        and isinstance(key, float)
+        and math.isnan(key)
+    ):
+        # Every YAML spelling of NaN denotes the same core-schema scalar,
+        # while Python NaN values are non-reflexive and cannot be compared
+        # reliably as set members unless PyYAML happens to reuse one object.
+        return key_node.tag, ".nan"
+    return key_node.tag, key
+
+
+class _ProducerSafeLoader(yaml.SafeLoader):
+    """SafeLoader restricted to the YAML 1.2 core-schema scalar tags."""
+
+    def construct_mapping(
+        self, node: yaml.MappingNode, deep: bool = False
+    ) -> dict[Any, Any]:
+        """Construct a mapping without silently discarding duplicate keys."""
+        if not isinstance(node, yaml.MappingNode):
+            raise yaml.constructor.ConstructorError(
+                None,
+                None,
+                f"expected a mapping node, but found {node.id}",
+                node.start_mark,
+            )
+
+        mapping: dict[Any, Any] = {}
+        # YAML node equality is defined by tag *and* value, but Python
+        # equality conflates distinct scalar types (True == 1 == 1.0). Track
+        # canonical identities so only genuinely repeated keys are rejected
+        # as duplicates, including non-reflexive float NaN keys.
+        identities: set[tuple[str, Any]] = set()
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            identity = _mapping_key_identity(key_node, key)
+            try:
+                is_duplicate = identity in identities
+            except TypeError as error:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found an unhashable key",
+                    key_node.start_mark,
+                ) from error
+            if is_duplicate:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            identities.add(identity)
+            if key in mapping:
+                # Not a duplicate (different tag), but Python cannot store
+                # both keys distinctly in a native dict either, e.g. a
+                # `true` key and a `1` key, or a `1` key and a `1.0` key.
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    "found mapping keys of different YAML types that "
+                    f"cannot be represented together: {key!r}",
+                    key_node.start_mark,
+                )
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
+
+
+# PyYAML's SafeLoader follows YAML 1.1, whose bool/int/timestamp resolvers
+# coerce or reinterpret bare producer-defined scalars: `on`/`yes` become
+# booleans, a colon-separated digit string like `12:34` is read as
+# sexagesimal (754), and date-shaped strings become `date`/`datetime`
+# objects. All of this corrupts producer-defined values on an adapter
+# read/write round trip.
+# Replace every implicit resolver with just the YAML 1.2 core schema's
+# null/bool/int/float rules, so any scalar that does not match one of those
+# exact forms is preserved as a plain string.
+_ProducerSafeLoader.yaml_implicit_resolvers = {}
+_ProducerSafeLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:null",
+    re.compile(r"^(?:~|null|Null|NULL|)$"),
+    ["~", "n", "N", ""],
+)
+_ProducerSafeLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool",
+    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+    list("tTfF"),
+)
+_ProducerSafeLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:int",
+    re.compile(r"^(?:[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+)$"),
+    list("-+0123456789"),
+)
+_ProducerSafeLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:float",
+    re.compile(
+        r"^(?:[-+]?(?:(?:\.[0-9]+|[0-9]+\.[0-9]*)(?:[eE][-+]?[0-9]+)?"
+        r"|[0-9]+[eE][-+]?[0-9]+)"
+        r"|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$"
+    ),
+    list("-+0123456789."),
+)
+
+
+def _construct_core_schema_int(loader: yaml.SafeLoader, node: yaml.Node) -> int:
+    # SafeConstructor.construct_yaml_int applies YAML 1.1 value semantics
+    # (including octal and sexagesimal forms) regardless of which tag the
+    # resolver assigned.
+    # Reimplement construction for the YAML 1.2 core-schema int forms the
+    # resolver above actually matches: plain decimal, and explicit 0o/0x.
+    value = loader.construct_scalar(node)
+    sign = -1 if value[0] == "-" else 1
+    if value[0] in "+-":
+        value = value[1:]
+    if value.startswith("0o"):
+        return sign * int(value[2:], 8)
+    if value.startswith("0x"):
+        return sign * int(value[2:], 16)
+    return sign * int(value)
+
+
+_ProducerSafeLoader.add_constructor(
+    "tag:yaml.org,2002:int", _construct_core_schema_int
+)
+
+
+@dataclass(frozen=True)
+class OkfDocument:
+    source_path: Path
+    relative_path: PurePosixPath
+    metadata: dict[str, Any] | None
+    body: str
+    has_front_matter: bool
+
+    @property
+    def is_index(self) -> bool:
+        return self.relative_path.name == "index.md"
+
+    @property
+    def is_log(self) -> bool:
+        return self.relative_path.name == "log.md"
+
+    @property
+    def is_reserved(self) -> bool:
+        return self.is_index or self.is_log
+
+
+def read_document(source_path: Path, root: Path) -> OkfDocument:
+    relative_path = PurePosixPath(source_path.relative_to(root).as_posix())
+    if source_path.is_symlink():
+        raise FrontMatterError("symbolic-link Markdown documents are not supported")
+    try:
+        resolved_path = source_path.resolve(strict=True)
+    except OSError as error:
+        raise FrontMatterError(f"cannot resolve Markdown document: {error}") from error
+    if not resolved_path.is_relative_to(root.resolve()):
+        raise FrontMatterError("Markdown document resolves outside the OKF bundle")
+    metadata, body, has_front_matter = split_front_matter(
+        source_path.read_text(encoding="utf-8")
+    )
+    return OkfDocument(
+        source_path=source_path,
+        relative_path=relative_path,
+        metadata=metadata,
+        body=body,
+        has_front_matter=has_front_matter,
+    )
+
+
+def read_documents(root: Path) -> list[OkfDocument]:
+    return [
+        read_document(source_path, root)
+        for source_path in sorted(root.rglob("*.md"))
+    ]
+
+
+def _has_reference_cycle(value: Any, active: set[int]) -> bool:
+    """Detect a self-referential YAML alias, e.g. ``&self\\n  - *self``.
+
+    PyYAML happily loads such recursive object graphs, but re-dumping one
+    with alias emission disabled (as dump_front_matter does) recurses forever
+    and crashes with an uncaught RecursionError instead of a clean error.
+    """
+    if not isinstance(value, (dict, list)):
+        return False
+    marker = id(value)
+    if marker in active:
+        return True
+    active = active | {marker}
+    items = value.values() if isinstance(value, dict) else value
+    return any(_has_reference_cycle(item, active) for item in items)
+
+
+def split_front_matter(markdown: str) -> tuple[dict[str, Any] | None, str, bool]:
+    lines = markdown.splitlines(keepends=True)
+    if not lines or not _FRONT_MATTER_DELIMITER_RE.match(lines[0]):
+        return None, markdown, False
+
+    closing_index = next(
+        (
+            index
+            for index, line in enumerate(lines[1:], start=1)
+            if _FRONT_MATTER_DELIMITER_RE.match(line)
+        ),
+        None,
+    )
+    if closing_index is None:
+        raise FrontMatterError("front matter is missing a closing delimiter")
+
+    source = "".join(lines[1:closing_index])
+    try:
+        loaded = yaml.load(source, Loader=_ProducerSafeLoader)
+    except yaml.YAMLError as error:
+        problem = getattr(error, "problem", None) or str(error).splitlines()[0]
+        raise FrontMatterError(f"invalid YAML front matter: {problem}") from error
+
+    if loaded is None:
+        metadata: dict[str, Any] = {}
+    elif isinstance(loaded, dict):
+        if not all(isinstance(key, str) for key in loaded):
+            raise FrontMatterError("front matter keys must be strings")
+        if _has_reference_cycle(loaded, set()):
+            raise FrontMatterError("front matter contains a recursive YAML reference")
+        metadata = loaded
+    else:
+        raise FrontMatterError("front matter must be a YAML mapping")
+
+    return metadata, "".join(lines[closing_index + 1 :]), True
+
+
+class _NoAliasSafeDumper(yaml.SafeDumper):
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
+
+
+def dump_front_matter(metadata: dict[str, Any]) -> str:
+    dumped = yaml.dump(
+        metadata,
+        Dumper=_NoAliasSafeDumper,
+        allow_unicode=True,
+        default_flow_style=False,
+        sort_keys=False,
+    ).rstrip()
+    return f"{FRONT_MATTER_DELIMITER}\n{dumped}\n{FRONT_MATTER_DELIMITER}\n"

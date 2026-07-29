@@ -1,0 +1,81 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  line-height: 1.6;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 72rem;
+  padding: 0 1.25rem;
+}
+
+.site-header,
+footer {
+  padding: 1rem 0;
+}
+
+nav {
+  align-items: baseline;
+  display: flex;
+  gap: 1rem;
+}
+
+.site-title {
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin-right: auto;
+}
+
+main {
+  min-height: 65vh;
+}
+
+a {
+  color: #1672c4;
+}
+
+.description {
+  font-size: 1.1rem;
+}
+
+.metadata > div {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(7rem, 10rem) 1fr;
+}
+
+.metadata dt {
+  font-weight: 700;
+}
+
+.metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+  padding: 0;
+}
+
+.tags li {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  border-radius: 1rem;
+  padding: 0.15rem 0.65rem;
+}
+
+code,
+pre {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+@media (prefers-color-scheme: dark) {
+  a {
+    color: #7dc2ff;
+  }
+}

@@ -1,6 +1,16 @@
-# HOKF Knowledge Index
+---
+okf_version: "0.2"
+---
+# HOKF Knowledge
 
-This is the canonical entry point for the Open Knowledge Format source tree.
+Start here for a progressive overview of the framework and its boundaries.
 
-Future OKF content should be organized under `concepts/`, `logs/`, or other
-OKF-native directories before being rendered into the Hugo site shell.
+## Foundations
+
+* [Architecture](concepts/architecture.md) - How canonical OKF knowledge flows into a static Hugo site.
+* [OKF-first authoring](concepts/okf-first.md) - Why knowledge is maintained independently of presentation.
+
+## Workflows
+
+* [Hugo shadow content](concepts/hugo-shadow-content.md) - How disposable Hugo content is generated and rendered.
+* [Agent Skills](concepts/agent-skills.md) - Repository-local workflows for authors, curators, builders, and reviewers.

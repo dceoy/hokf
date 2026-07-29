@@ -1,6 +1,15 @@
-baseURL = "https://example.org/"
+baseURL = "/"
 locale = "en-us"
 title = "HOKF"
+disableKinds = ["taxonomy", "term"]
 
 [params]
 description = "Hugo-based Open Knowledge Framework"
+
+[markup.goldmark.renderer]
+unsafe = false
+
+[outputs]
+home = ["HTML"]
+section = ["HTML"]
+page = ["HTML"]

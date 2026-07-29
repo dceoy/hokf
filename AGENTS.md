@@ -1,82 +1,132 @@
 # AGENTS.md
 
-This repository is the foundation for HOKF, the Hugo-based Open Knowledge
-Framework. AI coding agents should keep changes small, respect the OKF-first
-architecture, and avoid adding runtime complexity unless a later issue
-explicitly asks for it.
+HOKF is an OKF-first, fully static knowledge framework. Keep changes scoped,
+preserve Open Knowledge Format v0.2 semantics, and avoid runtime complexity.
 
-## Project Structure
+## Repository structure
 
 ```text
 okf/
-  index.md           Canonical OKF entry point
-  concepts/          Canonical concept notes
-  logs/              Canonical knowledge logs
+  index.md                 Reserved bundle index; declares OKF v0.2
+  log.md                   Reserved bundle update history
+  concepts/                Canonical concept documents
 site/
-  hugo.toml          Minimal Hugo configuration
-  content/           Generated Hugo content, not canonical source
-  layouts/           Hugo layout shell
-  assets/            Hugo asset shell
-  static/            Hugo static file shell
-tools/               Minimal glue code for future adapters
-.agents/skills/      Repository-local Agent Skills
-.github/workflows/   Future CI workflows
+  hugo.toml                Hugo configuration
+  content/                 Ignored, disposable adapter output
+  layouts/                 Thin Hugo templates and link render hook
+  assets/                  Framework-free source assets
+tools/
+  okf_common.py            Shared safe YAML parser
+  okf_hugo_adapter.py      Reads okf/ and writes site/content/
+  okf_validate.py          Conformance and advisory validator
+tests/                     Python unit tests
+.agents/skills/            Repository-local Agent Skills
+.github/workflows/pages.yml
+                            Static validation, build, index, and deploy
 ```
 
-## Source-of-Truth Rules
+## Source-of-truth rules
 
-- Treat `okf/` as the canonical source of knowledge.
-- Treat `site/content/` as derived output from future OKF-to-Hugo tooling.
-- Do not move canonical knowledge into Hugo content files.
-- Keep generated or rendered views separate from source knowledge.
-- Keep `.agents/skills/` for reusable agent workflows that are local to this
-  repository.
+- Edit knowledge only under `okf/`.
+- Never hand-edit or commit `site/content/`; regenerate it from `okf/`.
+- Never commit `site/public/` or `node_modules/`.
+- Preserve unknown concept types, unknown keys, and nested metadata.
+- Keep Hugo and Pagefind as consumers of OKF rather than a second knowledge
+  model.
 
-## Expected Local Commands
+## Add or update a concept
 
-These commands define the expected workflow surface, even while some are
-placeholders until later issues add implementation details:
+1. Search `okf/` for an existing path, title, or equivalent concept.
+2. Create or edit a non-reserved `.md` file. Its bundle-relative path without
+   `.md` is its concept ID.
+3. Add YAML front matter with a non-empty `type`. This is the only
+   always-required concept field.
+4. Add useful recommended `title`, `description`, `resource`, and `tags`
+   metadata. Use lowercase kebab-case tags.
+5. Add optional `generated`, `verified`, `sources`, `status`, and `stale_after`
+   only when the values are known. Use `generated`, never a new legacy
+   `timestamp`.
+6. Use `human:<id>`, `process:<id>`, or `<producer>/<version>` actors and ISO
+   8601 event datetimes.
+7. Use standard relative or bundle-root-relative `.md` links.
+8. Add a concise entry to the nearest `index.md` and record a meaningful
+   bundle-level change in `log.md`.
+
+## Maintain reserved files
+
+- `index.md` uses headings and Markdown link lists for progressive disclosure.
+  It has no front matter except at the bundle root, where the only key is
+  `okf_version: "0.2"`.
+- `log.md` has no front matter. Use `## YYYY-MM-DD` headings ordered newest
+  first with prose list entries beneath them.
+- Do not use either reserved filename for a concept or recreate a `logs/log.md`
+  subtree for bundle history.
+
+## Commands
+
+Set up dependencies:
 
 ```sh
-# Inspect repository state.
-git status --short
-
-# Validate Markdown when a local formatter or linter is available.
-# Example future command:
-# markdownlint README.md AGENTS.md okf/**/*.md
-
-# Run the Hugo site once layouts and generated content exist.
-# Example future command:
-# hugo --source site
-
-# Run future OKF-to-Hugo adapter tooling.
-# Example future command:
-# ./tools/okf-to-hugo
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --only-binary=:all: -r requirements.txt
+npm ci --ignore-scripts
 ```
 
-## Contribution Conventions
+Validate and test:
 
-- Keep changes scoped to the requested issue.
-- Prefer documentation and placeholders over premature implementation in the
-  foundation stage.
-- Do not add dependencies unless they are necessary for the issue being solved.
-- Preserve the distinction between canonical OKF source and generated Hugo
-  output.
-- If adding tooling later, make it explicit whether it reads from `okf/`, writes
-  to `site/`, or does both.
-- Run available checks before finishing. If no checks exist, verify the file tree
-  and Markdown structure manually.
+```sh
+python tools/okf_validate.py --src okf
+python -m unittest discover -s tests -v
+```
 
-## Non-Goals
+Generate and build:
 
-Do not add these unless a later issue explicitly changes the project scope:
+```sh
+python tools/okf_hugo_adapter.py --src okf --dst site/content --clean
+hugo --source site --destination public --cleanDestinationDir
+npm run pagefind
+```
 
-- Backend runtime
-- Database
-- Custom CMS
-- Vector database
-- Heavy Hugo theme fork
-- Full OKF-to-Hugo adapter
-- Hugo layout implementation
-- Validation framework
-- Search implementation
+Preview:
+
+```sh
+hugo server --source site
+```
+
+Test project-path links:
+
+```sh
+hugo --source site --destination public --cleanDestinationDir \
+  --baseURL https://example.github.io/hokf/
+```
+
+Validate repository skills:
+
+```sh
+npx --yes skills-ref@0.1.5 validate .agents/skills/okf-author
+npx --yes skills-ref@0.1.5 validate .agents/skills/okf-curator
+npx --yes skills-ref@0.1.5 validate .agents/skills/okf-hugo-site
+npx --yes skills-ref@0.1.5 validate .agents/skills/okf-pr-review
+```
+
+## Validation policy
+
+`ERROR` findings are blocking format violations. Fix them before generation or
+publishing. `WARNING` findings are advisory quality concerns and do not make an
+OKF v0.2 bundle nonconformant. Review warnings introduced by a change; use
+`--warnings-as-errors` only when an explicit quality gate is requested.
+
+## Local skills
+
+- Use `okf-author` for creating or updating concepts.
+- Use `okf-curator` for index, log, freshness, link, tag, orphan, and duplicate
+  maintenance.
+- Use `okf-hugo-site` for adapter, Hugo, Pagefind, and Pages work.
+- Use `okf-pr-review` for reviews spanning OKF and the static toolchain.
+
+## Non-goals
+
+Do not add a backend, database, custom CMS, vector database, server-side search,
+heavy Hugo theme, JavaScript application framework, schema registry, or agent
+orchestration runtime.
