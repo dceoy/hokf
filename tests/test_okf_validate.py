@@ -197,6 +197,28 @@ class OkfValidateTest(unittest.TestCase):
 
             self.assertEqual(findings, [])
 
+    def test_index_accepts_setext_level_one_section_heading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text(
+                "Concepts\n========\n",
+                encoding="utf-8",
+            )
+            (root / "log.md").write_text(
+                "# Bundle Log\n\n## 2026-07-03\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+
+            self.assertEqual(findings, [])
+
+    def test_reference_definition_is_not_setext_heading_content(self) -> None:
+        headings = find_markdown_headings("[ref]: concept.md\n========\n")
+
+        self.assertEqual(headings, [])
+
     def test_atx_closing_hashes_require_whitespace_and_no_escape(self) -> None:
         headings = find_markdown_headings(
             "## 2026-07-03 ##\n"

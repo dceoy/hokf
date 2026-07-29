@@ -1213,6 +1213,50 @@ class OkfHugoAdapterTest(unittest.TestCase):
         self.assertIn("Real link: [child](/concepts/child/)", rewritten)
         self.assertEqual(iter_link_targets(body), ["child.md"])
 
+    def test_two_tabs_after_list_marker_stay_code_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "-\t\t[child](child.md)\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("[child](child.md)", parent_html)
+            self.assertNotIn("[child](/concepts/child/)", parent_html)
+            self.assertNotIn('href="/concepts/child/"', parent_html)
+
+    def test_setext_index_section_heading_renders_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            src.mkdir()
+            (src / "index.md").write_text(
+                "Concepts\n========\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            index_html = (public / "index.html").read_text(encoding="utf-8")
+            self.assertIn('<h1 id="concepts">Concepts</h1>', index_html)
+
     def test_rewrite_markdown_links_treats_indented_list_continuation_as_prose(
         self,
     ) -> None:

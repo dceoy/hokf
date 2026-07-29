@@ -19,6 +19,7 @@ try:
         find_code_block_spans,
         find_html_block_spans,
         is_external_or_special_link,
+        iter_reference_definitions,
         iter_link_targets,
         merge_spans,
         normalize_posix_path,
@@ -35,6 +36,7 @@ except ModuleNotFoundError:
         find_code_block_spans,
         find_html_block_spans,
         is_external_or_special_link,
+        iter_reference_definitions,
         iter_link_targets,
         merge_spans,
         normalize_posix_path,
@@ -46,6 +48,13 @@ ATX_HEADING_LINE_RE = re.compile(
     r"^[ \t]{0,3}(#{1,6})(?:[ \t]+(.*?)[ \t]*|[ \t]*)$"
 )
 ATX_CLOSING_SEQUENCE_RE = re.compile(r"(?:^|[ \t]+)#+$")
+SETEXT_HEADING_LINE_RE = re.compile(r"^[ \t]{0,3}(=+|-+)[ \t]*$")
+TOP_LEVEL_CONTAINER_LINE_RE = re.compile(
+    r"^ {0,3}(?:>|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$))"
+)
+THEMATIC_BREAK_LINE_RE = re.compile(
+    r"^ {0,3}(?:(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})$"
+)
 ACTOR_RE = re.compile(r"^(?:human:[^\s:]+|process:[^\s:]+|[^\s/]+/[^\s/]+)$")
 TAG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 STATUS_VALUES = {"draft", "stable", "deprecated"}
@@ -261,12 +270,18 @@ def validate_log(document: OkfDocument) -> list[Finding]:
 
 
 def find_markdown_headings(body: str) -> list[MarkdownHeading]:
-    """Return ATX headings outside CommonMark code and raw-HTML blocks."""
+    """Return top-level headings outside CommonMark code and HTML blocks."""
     code_spans = find_code_block_spans(body)
+    reference_spans = [
+        (definition.start, definition.end)
+        for definition in iter_reference_definitions(body)
+    ]
     excluded_spans = merge_spans(
-        code_spans + find_html_block_spans(body, code_spans)
+        code_spans + find_html_block_spans(body, code_spans) + reference_spans
     )
     headings: list[MarkdownHeading] = []
+    paragraph_lines: list[str] = []
+    paragraph_start: int | None = None
     excluded_index = 0
     offset = 0
     for line in body.splitlines(keepends=True):
@@ -277,18 +292,47 @@ def find_markdown_headings(body: str) -> list[MarkdownHeading]:
             excluded_index += 1
         is_excluded = (
             excluded_index < len(excluded_spans)
-            and excluded_spans[excluded_index][0] <= offset
+            and offset + len(line) > excluded_spans[excluded_index][0]
         )
-        if not is_excluded:
-            match = ATX_HEADING_LINE_RE.fullmatch(line.rstrip("\r\n"))
-            if match is not None:
+        text = line.rstrip("\r\n")
+        if is_excluded:
+            paragraph_lines = []
+            paragraph_start = None
+        else:
+            atx_match = ATX_HEADING_LINE_RE.fullmatch(text)
+            setext_match = SETEXT_HEADING_LINE_RE.fullmatch(text)
+            if atx_match is not None:
                 headings.append(
                     MarkdownHeading(
-                        level=len(match.group(1)),
-                        text=strip_atx_closing_sequence(match.group(2) or ""),
+                        level=len(atx_match.group(1)),
+                        text=strip_atx_closing_sequence(atx_match.group(2) or ""),
                         line_start=offset,
                     )
                 )
+                paragraph_lines = []
+                paragraph_start = None
+            elif setext_match is not None and paragraph_start is not None:
+                raw_text = "".join(paragraph_lines).rstrip("\r\n").strip(" \t")
+                headings.append(
+                    MarkdownHeading(
+                        level=1 if setext_match.group(1).startswith("=") else 2,
+                        text=raw_text,
+                        line_start=paragraph_start,
+                    )
+                )
+                paragraph_lines = []
+                paragraph_start = None
+            elif (
+                not text.strip(" \t")
+                or TOP_LEVEL_CONTAINER_LINE_RE.match(text)
+                or THEMATIC_BREAK_LINE_RE.fullmatch(text)
+            ):
+                paragraph_lines = []
+                paragraph_start = None
+            else:
+                if paragraph_start is None:
+                    paragraph_start = offset
+                paragraph_lines.append(line)
         offset += len(line)
     return headings
 

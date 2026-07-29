@@ -833,6 +833,14 @@ def consume_indent(text: str, cursor: int, width: int) -> int | None:
     return cursor if columns == width else None
 
 
+def column_at(text: str, cursor: int) -> int:
+    """Return the CommonMark column at cursor, expanding tabs to 4 stops."""
+    column = 0
+    for character in text[:cursor]:
+        column += 4 - (column % 4) if character == "\t" else 1
+    return column
+
+
 def parse_block_container_prefix(text: str) -> tuple[tuple[tuple[str, int], ...], int]:
     """Return block-quote/list container tokens and the content start.
 
@@ -869,13 +877,23 @@ def parse_block_container_prefix(text: str) -> tuple[tuple[tuple[str, int], ...]
             ):
                 whitespace_end += 1
             if whitespace_end > marker_end:
-                # When the first block starts with 5+ whitespace characters,
-                # CommonMark assigns only one to the list prefix; the
-                # remaining indentation can therefore start a code block.
-                if whitespace_end - marker_end > 4:
-                    whitespace_end = marker_end + 1
-                tokens.append(("list", whitespace_end - marker_start))
-                cursor = whitespace_end
+                marker_start_column = column_at(text, marker_start)
+                marker_end_column = column_at(text, marker_end)
+                whitespace_end_column = column_at(text, whitespace_end)
+                post_marker_columns = whitespace_end_column - marker_end_column
+                marker_columns = marker_end_column - marker_start_column
+                if post_marker_columns > 4:
+                    # CommonMark assigns only one column to the list prefix.
+                    # Keep the original whitespace visible to block parsing:
+                    # a tab can straddle that logical prefix column and the
+                    # four columns that start an indented code block.
+                    content_start = marker_end
+                    prefix_columns = marker_columns + 1
+                else:
+                    content_start = whitespace_end
+                    prefix_columns = marker_columns + post_marker_columns
+                tokens.append(("list", prefix_columns))
+                cursor = content_start
                 continue
 
         cursor = marker_start
