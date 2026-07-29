@@ -917,6 +917,26 @@ def parse_inline_link_tail(
     )
 
 
+def is_backslash_escaped(body: str, index: int) -> bool:
+    """Return whether the character at ``index`` follows an odd slash run."""
+    slash_count = 0
+    cursor = index - 1
+    while cursor >= 0 and body[cursor] == "\\":
+        slash_count += 1
+        cursor -= 1
+    return slash_count % 2 == 1
+
+
+def is_image_opener(body: str, bracket_index: int) -> bool:
+    """Return whether ``body[bracket_index]`` starts a CommonMark image."""
+    bang_index = bracket_index - 1
+    return (
+        bang_index >= 0
+        and body[bang_index] == "!"
+        and not is_backslash_escaped(body, bang_index)
+    )
+
+
 def find_inline_link_openers(
     body: str,
     excluded_spans: list[tuple[int, int]] | None = None,
@@ -959,7 +979,11 @@ def find_inline_link_openers(
             continue
 
         char = body[index]
-        if char == "\\" and index + 1 < length:
+        if (
+            char == "\\"
+            and index + 1 < length
+            and body[index + 1] not in "\r\n"
+        ):
             index += 2
             continue
         if char in "\r\n":
@@ -971,13 +995,12 @@ def find_inline_link_openers(
             index = next_line
             continue
         if char == "[":
-            label_start = (
-                index - 1 if index > 0 and body[index - 1] == "!" else index
-            )
+            image_opener = is_image_opener(body, index)
+            label_start = index - 1 if image_opener else index
             stack.append(
                 {
                     "label_start": label_start,
-                    "is_image": label_start != index,
+                    "is_image": image_opener,
                     "active": True,
                 }
             )
@@ -1564,7 +1587,11 @@ def find_used_reference_labels(
             continue
 
         char = body[cursor]
-        if char == "\\" and cursor + 1 < len(body):
+        if (
+            char == "\\"
+            and cursor + 1 < len(body)
+            and body[cursor + 1] not in "\r\n"
+        ):
             cursor += 2
             continue
         if char in "\r\n":
@@ -1576,15 +1603,11 @@ def find_used_reference_labels(
             cursor = next_line
             continue
         if char == "[":
-            label_start = (
-                cursor - 1
-                if cursor > 0 and body[cursor - 1] == "!"
-                else cursor
-            )
+            image_opener = is_image_opener(body, cursor)
             stack.append(
                 {
                     "opener": cursor,
-                    "is_image": label_start != cursor,
+                    "is_image": image_opener,
                     "active": True,
                 }
             )

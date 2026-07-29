@@ -1797,6 +1797,39 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
                 parent_html,
             )
 
+    def test_escaped_image_marker_exposes_inner_link_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "other.md").write_text(
+                "---\ntype: Minimal\n---\n# Other\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "[outer \\![inner](child.md)](other.md)\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            # The escaped "!" is literal, so the inner normal link deactivates
+            # the outer opener under CommonMark's bracket precedence rules.
+            self.assertIn('href="/concepts/child/">inner</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+            self.assertNotIn('href="/concepts/other/"', parent_html)
+
     def test_reference_definition_inside_block_quote_resolves_in_real_hugo_build(
         self,
     ) -> None:
@@ -2302,6 +2335,38 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
         )
 
         self.assertEqual(iter_link_targets(body), ["concepts/baz.md"])
+
+    def test_escaped_image_marker_exposes_inner_link_target(self) -> None:
+        body = "[outer \\![inner](child.md)](other.md)\n"
+
+        self.assertEqual(iter_link_targets(body), ["child.md"])
+
+    def test_backslash_hard_break_does_not_hide_blank_line_from_inline_scan(
+        self,
+    ) -> None:
+        body = "[foo\\\n\nbar](child.md)\n"
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/child.md"),
+            },
+        )
+
+        self.assertEqual(rewritten, body)
+
+    def test_backslash_hard_break_does_not_hide_blank_line_from_reference_scan(
+        self,
+    ) -> None:
+        # The empty collapsed label cannot resolve on its own. The custom
+        # scanner must not associate it with the opener invalidated by the
+        # blank line, even though normalization would otherwise match the
+        # definition below.
+        body = "[foo\\\n\nbar][]\n\n[foo\\ bar]: child.md\n"
+
+        self.assertEqual(iter_link_targets(body), [])
 
     def test_code_span_shortcut_lookalike_is_not_a_reference_use(self) -> None:
         # A shortcut-reference-shaped code span renders as literal code, not
