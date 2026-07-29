@@ -667,9 +667,12 @@ class OkfHugoAdapterTest(unittest.TestCase):
             _, body = load_generated(dst / "_index.md")
 
             self.assertIn('[ref]: /child/ "[fake](other.md)"', body)
+            # "ref" is never referenced by an actual [ref]/[text][ref] use,
+            # so CommonMark renders no link at all for this definition; it
+            # must not be exposed as a validated/indexed link target.
             self.assertEqual(
                 iter_link_targets('[ref]: child.md "[fake](other.md)"\n'),
-                ["child.md"],
+                [],
             )
 
     def test_crlf_fence_does_not_hide_following_links_or_reference_definitions(
@@ -1646,6 +1649,89 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
             self.assertNotIn('href="other.md"', parent_html)
             self.assertNotIn('href="/concepts/other/"', parent_html)
 
+    def test_code_span_in_link_label_still_resolves_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [see `child`](child.md).\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            # A code span nested in the link label must not exclude the
+            # link itself: CommonMark permits inline content in link text,
+            # so only the label overlaps the code span, not the
+            # destination/link syntax.
+            self.assertIn('href="/concepts/child/">see <code>child</code></a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_raw_html_in_link_label_still_resolves_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [<span>child</span>](child.md).\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            # Inline raw HTML nested in the link label must likewise not
+            # exclude the link. Goldmark's default (safe) rendering omits
+            # the raw <span> tags themselves, so only the href/text content
+            # is asserted here.
+            self.assertIn('href="/concepts/child/">', parent_html)
+            self.assertIn("-->child<!--", parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_link_shaped_text_opened_inside_code_span_stays_literal(self) -> None:
+        # The opposite direction: when the opening "[" itself sits inside a
+        # code span (here the one-character code span `` `[` ``), it is not
+        # real link syntax -- CommonMark renders a code span containing "["
+        # followed by literal "text](target.md)" -- so this must not be
+        # rewritten even though the naive bracket scanner still notices a
+        # "]" immediately followed by "(".
+        body = "Use `[`text](target.md) as an example.\n"
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/target.md"),
+            },
+        )
+
+        self.assertEqual(rewritten, body)
+
     def test_image_nested_in_link_label_resolves_outer_link_in_real_hugo_build(
         self,
     ) -> None:
@@ -2146,6 +2232,28 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
             )
             self.assertIn('>the root</a>', parent_html)
             self.assertNotIn('href="../index.md"', parent_html)
+
+    def test_unused_reference_definition_is_not_a_link_target(self) -> None:
+        # A definition with no [text][label]/[label] use anywhere renders no
+        # link at all in CommonMark, so it must not be exposed as a
+        # validated/indexed link target (matches iter_link_targets, which
+        # feeds both okf_validate's broken-link check and orphan discovery).
+        body = "Body text with no reference-style use.\n\n[unused]: child.md\n"
+
+        self.assertEqual(iter_link_targets(body), [])
+
+    def test_duplicate_reference_label_uses_first_definition_only(self) -> None:
+        # CommonMark resolves a reference-style use against the *first*
+        # matching definition; a later definition with the same
+        # (normalized) label is shadowed and must not be treated as a
+        # validated link target.
+        body = (
+            "See [the child][ref].\n\n"
+            "[ref]: child.md\n"
+            "[REF]: missing.md\n"
+        )
+
+        self.assertEqual(iter_link_targets(body), ["child.md"])
 
     def test_leaf_page_and_sibling_directory_both_publish_in_real_hugo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

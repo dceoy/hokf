@@ -131,6 +131,8 @@ class InlineLink:
     prefix: str
     raw_target: str
     suffix: str
+    target_start: int
+    target_end: int
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,7 @@ class ReferenceDefinition:
     prefix: str
     raw_target: str
     suffix: str
+    label: str
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -880,6 +883,8 @@ def parse_inline_link_tail(
         prefix=body[label_start:target_start],
         raw_target=body[target_start:target_end],
         suffix=body[target_end : cursor + 1],
+        target_start=target_start,
+        target_end=target_end,
     )
 
 
@@ -987,15 +992,17 @@ def find_reference_definition_candidates(
 
 def find_reference_definition_openers(
     body: str,
-) -> list[tuple[int, int, tuple[tuple[str, int], ...]]]:
-    """Locate CommonMark reference labels; return (start, after-colon, tokens).
+) -> list[tuple[int, int, tuple[tuple[str, int], ...], str]]:
+    """Locate CommonMark reference labels; return (start, after-colon, tokens,
+    label).
 
     Reference labels may contain backslash-escaped punctuation and one line
     ending, but not an unescaped opening bracket or an empty/whitespace-only
     label. ``tokens`` is the opening line's block-container prefix, used to
     recognize repeated prefixes on any destination/title continuation line.
+    ``label`` is the raw (unnormalized) source text between the brackets.
     """
-    openers: list[tuple[int, int, tuple[tuple[str, int], ...]]] = []
+    openers: list[tuple[int, int, tuple[tuple[str, int], ...], str]] = []
     for definition_start, label_start, tokens in find_reference_definition_candidates(
         body
     ):
@@ -1023,7 +1030,14 @@ def find_reference_definition_openers(
                     and cursor + 1 < len(body)
                     and body[cursor + 1] == ":"
                 ):
-                    openers.append((definition_start, cursor + 2, tokens))
+                    openers.append(
+                        (
+                            definition_start,
+                            cursor + 2,
+                            tokens,
+                            body[label_start + 1 : cursor],
+                        )
+                    )
                 break
             if char in "\r\n":
                 if line_endings == 1:
@@ -1162,9 +1176,12 @@ def _parse_reference_definitions_ignoring_paragraphs(
     ends.
     """
     definitions: list[ReferenceDefinition] = []
-    for definition_start, after_colon, tokens in find_reference_definition_openers(
-        body
-    ):
+    for (
+        definition_start,
+        after_colon,
+        tokens,
+        label,
+    ) in find_reference_definition_openers(body):
         cursor = consume_spaces_and_tabs(body, after_colon)
         next_line = consume_reference_definition_line_ending(body, cursor, tokens)
         if next_line is not None:
@@ -1208,6 +1225,7 @@ def _parse_reference_definitions_ignoring_paragraphs(
                 prefix=body[definition_start:target_start],
                 raw_target=body[target_start:target_end],
                 suffix=body[target_end:end],
+                label=label,
             )
         )
     return definitions
@@ -1349,6 +1367,84 @@ def iter_inline_links(body: str) -> list[InlineLink]:
     return find_inline_link_openers(body)
 
 
+REFERENCE_USE_RE = re.compile(
+    r"\[((?:\\.|[^\[\]])*)\](?:\[((?:\\.|[^\[\]])*)\])?"
+)
+
+
+def normalize_reference_label(label: str) -> str:
+    """CommonMark label matching: Unicode case fold plus whitespace
+    collapse/strip; an empty result matches nothing."""
+    return " ".join(label.split()).casefold()
+
+
+def first_definition_wins(
+    reference_definitions: list[ReferenceDefinition],
+) -> dict[str, ReferenceDefinition]:
+    """Map each normalized label to its first definition, per CommonMark's
+    rule that an earlier definition shadows any later one with the same
+    label."""
+    by_label: dict[str, ReferenceDefinition] = {}
+    for definition in reference_definitions:
+        normalized = normalize_reference_label(definition.label)
+        if normalized and normalized not in by_label:
+            by_label[normalized] = definition
+    return by_label
+
+
+def find_used_reference_labels(
+    body: str, reference_definitions: list[ReferenceDefinition]
+) -> set[str]:
+    """Conservatively collect normalized labels used by a reference-style
+    link/image: full ``[text][label]``, collapsed ``[text][]``, or shortcut
+    ``[label]``. This intentionally skips CommonMark's full bracket/
+    precedence resolution (nested brackets, code-span/raw-HTML exclusion):
+    over-counting a bracketed phrase as a "use" is harmless, since it only
+    falls back to today's behavior of treating the definition as used;
+    under-counting could wrongly hide a real link, so matches are excluded
+    only when they fall inside a reference definition itself (otherwise
+    every "[label]:" definition would trivially count as a use of its own
+    label).
+    """
+    definition_spans = [(d.start, d.end) for d in reference_definitions]
+    used: set[str] = set()
+    for match in REFERENCE_USE_RE.finditer(body):
+        if any(
+            match.start() < d_end and match.end() > d_start
+            for d_start, d_end in definition_spans
+        ):
+            continue
+        text, explicit_label = match.group(1), match.group(2)
+        normalized = normalize_reference_label(explicit_label or text)
+        if normalized:
+            used.add(normalized)
+    return used
+
+
+def link_syntax_excluded(
+    link: InlineLink, excluded_spans: list[tuple[int, int]]
+) -> bool:
+    """A link is only fake -- not real CommonMark link syntax -- when one of
+    its *delimiters* (the opening bracket, "](", the destination, or the
+    closing ")") sits inside a code span or raw HTML span. Content elsewhere
+    in the label may legitimately overlap a code span or raw HTML (e.g.
+    ``[see `child`](child.md)``) without invalidating the link, so this
+    deliberately does not test the whole label-to-destination range.
+    """
+    open_bracket_end = link.start + (2 if link.prefix.startswith("!") else 1)
+    delimiter_spans = (
+        (link.start, open_bracket_end),
+        (link.target_start - 2, link.target_start),
+        (link.target_start, link.target_end),
+        (link.end - 1, link.end),
+    )
+    return any(
+        start < span_end and end > span_start
+        for start, end in delimiter_spans
+        for span_start, span_end in excluded_spans
+    )
+
+
 def iter_link_targets(body: str) -> list[str]:
     """Yield raw (unwrapped) destinations for inline links and reference-
     style link definitions, skipping code and raw HTML regions. Shared by the
@@ -1374,13 +1470,15 @@ def iter_link_targets(body: str) -> list[str]:
     targets = [
         unwrap_angle_brackets(link.raw_target)
         for link in iter_inline_links(body)
-        if not excluded(link.start, link.end)
+        if not link_syntax_excluded(link, excluded_spans)
         and not in_reference_definition(link.start, link.end)
     ]
+    used_labels = find_used_reference_labels(body, reference_definitions)
     targets.extend(
         unwrap_angle_brackets(definition.raw_target)
-        for definition in reference_definitions
-        if not excluded(definition.start, definition.end)
+        for definition in first_definition_wins(reference_definitions).values()
+        if normalize_reference_label(definition.label) in used_labels
+        and not excluded(definition.start, definition.end)
     )
     return targets
 
@@ -1419,7 +1517,7 @@ def rewrite_markdown_links(
     replacements: list[tuple[int, int, str]] = []
 
     for link in iter_inline_links(body):
-        if excluded(link.start, link.end) or in_reference_definition(
+        if link_syntax_excluded(link, excluded_spans) or in_reference_definition(
             link.start, link.end
         ):
             continue

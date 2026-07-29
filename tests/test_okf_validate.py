@@ -175,11 +175,12 @@ class OkfValidateTest(unittest.TestCase):
             (root / "index.md").write_text(
                 "---\nokf_version: \"0.2\"\n---\n"
                 "# Concepts\n\n"
-                "See [Alpha][alpha-ref].\n\n"
+                "See [Alpha][alpha-ref] and [Missing][missing-ref].\n\n"
                 "[alpha-ref]:\n"
                 "  concepts/alpha.md\n"
                 '  "Alpha"\n'
-                "[missing-ref]: concepts/missing.md\n",
+                "[missing-ref]: concepts/missing.md\n"
+                "[unused-ref]: concepts/unused.md\n",
                 encoding="utf-8",
             )
             (root / "concepts" / "alpha.md").write_text(
@@ -198,6 +199,10 @@ class OkfValidateTest(unittest.TestCase):
             # to a genuinely missing concept must still be reported.
             self.assertNotIn("index", warning_subjects)
             self.assertIn("link:concepts/missing.md", warning_subjects)
+            # unused-ref is never referenced by any [text][unused-ref] or
+            # shortcut [unused-ref] use, so CommonMark renders no link at
+            # all for it; it must not be reported as a broken link either.
+            self.assertNotIn("link:concepts/unused.md", warning_subjects)
 
     def test_html_comment_link_does_not_count_as_indexed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
