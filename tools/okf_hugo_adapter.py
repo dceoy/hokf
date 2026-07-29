@@ -45,7 +45,6 @@ CHARACTER_REFERENCE_RE = re.compile(
 )
 FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 INDENTED_LINE_RE = re.compile(r"^(?: {4}|\t)")
-LIST_MARKER_RE = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
 CONTAINER_LIST_MARKER_RE = re.compile(r"(?:[-+*]|\d{1,9}[.)])")
 ASCII_PUNCTUATION = frozenset(string.punctuation)
 
@@ -259,9 +258,9 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
     Covers fenced code blocks (including fences nested in block quotes and
     list items), indented code blocks, and inline code spans delimited by
     equal-length backtick runs (including multiline spans), so link rewriting
-    can skip all of them. Indented-code detection intentionally backs off when
-    the line before the blank-line gap looks like a list marker, since
-    indented continuation of a list item is not a code block.
+    can skip all of them. Active list-container indentation is retained across
+    blank lines so ordinary list continuations remain prose while content
+    indented four additional columns is recognized as a code block.
     """
     spans: list[tuple[int, int]] = []
     lines = body.splitlines(keepends=True)
@@ -274,12 +273,38 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
     n = len(lines)
     prev_blank = True
     last_nonblank_text = ""
+    active_list_tokens: tuple[tuple[str, int], ...] = ()
     i = 0
     while i < n:
         line = lines[i]
         text = line.rstrip("\r\n")
 
         container_tokens, content_start = parse_block_container_prefix(text)
+        container_content = text[content_start:]
+        active_content = (
+            strip_block_container_prefix(text, active_list_tokens)
+            if active_list_tokens
+            else None
+        )
+        line_starts_list = any(kind == "list" for kind, _ in container_tokens)
+        line_starts_nested_list = False
+
+        if active_list_tokens and active_content is None:
+            if line_starts_list:
+                # A sibling or less deeply nested list marker starts a new
+                # active prefix that supersedes the previous item.
+                active_list_tokens = container_tokens
+            elif container_content.strip() != "" and prev_blank:
+                # A non-indented block after a blank line ends the list.
+                active_list_tokens = ()
+        elif active_list_tokens and active_content is not None:
+            nested_tokens, _ = parse_block_container_prefix(active_content)
+            if any(kind == "list" for kind, _ in nested_tokens):
+                line_starts_nested_list = True
+                active_list_tokens += nested_tokens
+        elif line_starts_list:
+            active_list_tokens = container_tokens
+
         fence_match = FENCE_OPEN_RE.match(text[content_start:])
         if fence_match:
             fence_run = fence_match.group(1)
@@ -302,20 +327,42 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
             last_nonblank_text = text
             continue
 
-        indented_content = text[content_start:]
+        active_content = (
+            strip_block_container_prefix(text, active_list_tokens)
+            if active_list_tokens
+            else None
+        )
+        indented_content = (
+            active_content if active_content is not None else container_content
+        )
+        indented_container_tokens = (
+            active_list_tokens if active_content is not None else container_tokens
+        )
         if (
             INDENTED_LINE_RE.match(indented_content)
             and prev_blank
-            and not LIST_MARKER_RE.match(last_nonblank_text)
-            and not INDENTED_LINE_RE.match(last_nonblank_text)
+            and not line_starts_nested_list
+            and (
+                active_content is not None
+                or not INDENTED_LINE_RE.match(last_nonblank_text)
+            )
         ):
             last_content = i
             j = i
             while j < n:
                 candidate = strip_block_container_prefix(
-                    lines[j].rstrip("\r\n"), container_tokens
+                    lines[j].rstrip("\r\n"), indented_container_tokens
                 )
                 if candidate is None:
+                    _, candidate_start = parse_block_container_prefix(
+                        lines[j].rstrip("\r\n")
+                    )
+                    candidate_container_content = lines[j].rstrip("\r\n")[
+                        candidate_start:
+                    ]
+                    if candidate_container_content.strip() == "":
+                        j += 1
+                        continue
                     break
                 if INDENTED_LINE_RE.match(candidate):
                     last_content = j
@@ -333,7 +380,6 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
             last_nonblank_text = lines[last_content].rstrip("\r\n")
             continue
 
-        container_content = text[content_start:]
         if container_content.strip() != "":
             last_nonblank_text = text
         prev_blank = container_content.strip() == ""
