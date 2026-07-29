@@ -521,7 +521,9 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
     run_index = 0
     while run_index < len(runs):
         opener = runs[run_index]
-        if in_block(opener.start(), opener.end()):
+        if in_block(opener.start(), opener.end()) or is_backslash_escaped(
+            body, opener.start()
+        ):
             run_index += 1
             continue
 

@@ -833,6 +833,37 @@ class OkfHugoAdapterTest(unittest.TestCase):
             self.assertIn("``code\n[child](child.md)``", body)
             self.assertIn("Real link: [child](/child/)", body)
 
+    def test_rewrite_markdown_links_ignores_escaped_code_span_openers(
+        self,
+    ) -> None:
+        body = (
+            "Escaped delimiters: \\` [child](child.md) \\`.\n\n"
+            "Escaped closer inside span: ` [child](child.md) \\`.\n\n"
+            "Even slash opener: \\\\` [child](child.md) `.\n"
+        )
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/child.md"),
+                PurePosixPath("concepts/parent.md"),
+            },
+        )
+
+        self.assertIn(
+            "Escaped delimiters: \\` [child](/concepts/child/) \\`.",
+            rewritten,
+        )
+        self.assertIn(
+            "Escaped closer inside span: ` [child](child.md) \\`.",
+            rewritten,
+        )
+        self.assertIn(
+            "Even slash opener: \\\\` [child](child.md) `.",
+            rewritten,
+        )
+
     def test_unmatched_backticks_do_not_form_code_span_across_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1167,6 +1198,34 @@ class OkfHugoAdapterTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("hugo"), "hugo binary is not installed")
 class OkfHugoAdapterRealBuildTest(unittest.TestCase):
+    def test_escaped_backticks_leave_nested_internal_link_active(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "\\` [child](child.md) \\`\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">child</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+            self.assertNotIn("<code>", parent_html)
+
     def test_indented_code_in_list_item_is_preserved_in_real_hugo_build(
         self,
     ) -> None:
