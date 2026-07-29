@@ -552,7 +552,16 @@ def find_raw_html_spans(
         offset += len(line)
 
     block_spans: list[tuple[int, int]] = []
+    # `type_seven_allowed` tracks whether the previous *effective* line (its
+    # active block-quote/list container prefix stripped) was blank, so a
+    # type-7 HTML block cannot interrupt an already-open paragraph.
+    # `prev_container_tokens` tracks that previous line's effective container
+    # so entering a new container (which always starts fresh, even mid
+    # paragraph in the enclosing context) also permits a type-7 block.
     type_seven_allowed = True
+    prev_container_tokens: tuple[tuple[str, int], ...] = ()
+    active_list_tokens: tuple[tuple[str, int], ...] = ()
+    prev_blank = True
     code_line_index = 0
     i = 0
     while i < len(lines):
@@ -576,16 +585,60 @@ def find_raw_html_spans(
 
         text = lines[i].rstrip("\r\n")
         container_tokens, content_start = parse_block_container_prefix(text)
-        content = text[content_start:]
+        container_content = text[content_start:]
+        active_content = (
+            strip_block_container_prefix(text, active_list_tokens)
+            if active_list_tokens
+            else None
+        )
+        line_starts_list = any(kind == "list" for kind, _ in container_tokens)
+
+        if active_list_tokens and active_content is None:
+            if line_starts_list:
+                # A sibling or less deeply nested list marker starts a new
+                # active prefix that supersedes the previous item.
+                active_list_tokens = container_tokens
+            elif container_content.strip() != "" and prev_blank:
+                # A non-indented block after a blank line ends the list.
+                active_list_tokens = ()
+        elif active_list_tokens and active_content is not None:
+            nested_tokens, _ = parse_block_container_prefix(active_content)
+            if any(kind == "list" for kind, _ in nested_tokens):
+                active_list_tokens += nested_tokens
+        elif line_starts_list:
+            active_list_tokens = container_tokens
+
+        # Recompute against the (possibly just-updated) active list prefix so
+        # indentation-only list continuation lines are normalized the same
+        # way `find_code_spans()` normalizes them for fence/indented-code
+        # detection.
+        active_content = (
+            strip_block_container_prefix(text, active_list_tokens)
+            if active_list_tokens
+            else None
+        )
+        indented_content = (
+            active_content if active_content is not None else container_content
+        )
+        indented_container_tokens = (
+            active_list_tokens if active_content is not None else container_tokens
+        )
+        indented_content_start = len(text) - len(indented_content)
+
+        container_changed = indented_container_tokens != prev_container_tokens
         start = html_block_start(
             body,
             offsets[i],
-            content_start,
-            content,
-            type_seven_allowed or bool(container_tokens),
+            indented_content_start,
+            indented_content,
+            type_seven_allowed or container_changed,
         )
+
+        prev_blank = container_content.strip() == ""
+
         if start is None:
-            type_seven_allowed = content.strip() == ""
+            type_seven_allowed = indented_content.strip() == ""
+            prev_container_tokens = indented_container_tokens
             i += 1
             continue
 
@@ -594,7 +647,7 @@ def find_raw_html_spans(
         while True:
             candidate_text = lines[end_index].rstrip("\r\n")
             candidate = strip_block_container_prefix(
-                candidate_text, container_tokens
+                candidate_text, indented_container_tokens
             )
             assert candidate is not None
 
@@ -610,7 +663,7 @@ def find_raw_html_spans(
 
             next_text = lines[end_index + 1].rstrip("\r\n")
             next_candidate = strip_block_container_prefix(
-                next_text, container_tokens
+                next_text, indented_container_tokens
             )
             if next_candidate is None or (
                 end_kind == "blank" and next_candidate.strip() == ""
@@ -622,6 +675,8 @@ def find_raw_html_spans(
             (offsets[i], offsets[end_index] + len(lines[end_index]))
         )
         type_seven_allowed = True
+        prev_container_tokens = indented_container_tokens
+        prev_blank = False
         i = end_index + 1
 
     spans = list(block_spans)

@@ -1117,6 +1117,89 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
             self.assertEqual(parent_html.count(highlighted_target), 2)
             self.assertIn('href="/concepts/child/">child</a>', parent_html)
 
+    def test_type_seven_html_does_not_interrupt_quoted_paragraph_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "> Parent text\n"
+                "> <span>\n"
+                "> [child](child.md)\n"
+                "> </span>\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">child</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_html_block_indented_in_list_item_is_preserved_in_real_hugo_build(
+        self,
+    ) -> None:
+        # Renders with `unsafe = true` (unlike build_with_real_hugo's default
+        # config) so the raw-HTML block's content is visible in the output
+        # instead of collapsing to "<!-- raw HTML omitted -->" either way,
+        # which would hide whether the internal link was wrongly rewritten.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "10. Example\n\n"
+                "    <div>\n"
+                "    [example](child.md)\n"
+                "    </div>\n\n"
+                "Real link: [child](child.md)\n",
+                encoding="utf-8",
+            )
+
+            generate_content(src, root / "content")
+            shutil.copytree(SITE_DIR / "layouts", root / "layouts")
+            shutil.copytree(SITE_DIR / "assets", root / "assets")
+            hugo_config = (SITE_DIR / "hugo.toml").read_text(encoding="utf-8")
+            (root / "hugo.toml").write_text(
+                hugo_config.replace("unsafe = false", "unsafe = true"),
+                encoding="utf-8",
+            )
+            self.assertIn("unsafe = true", (root / "hugo.toml").read_text())
+            public = root / "public"
+            subprocess.run(
+                ["hugo", "--source", str(root), "--destination", str(public)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("[example](child.md)", parent_html)
+            self.assertNotIn('href="/concepts/child/">example</a>', parent_html)
+            self.assertIn('href="/concepts/child/">child</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
     def test_reference_label_forms_resolve_in_real_hugo_build(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "okf"
