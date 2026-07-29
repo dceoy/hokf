@@ -102,6 +102,33 @@ class OkfValidateTest(unittest.TestCase):
             self.assertIn("status", warning_subjects)
             self.assertIn("stale_after", warning_subjects)
 
+    def test_recursive_yaml_alias_reports_frontmatter_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n"
+                "# Concepts\n\n* [Minimal](minimal.md) - Small example.\n",
+                encoding="utf-8",
+            )
+            (root / "log.md").write_text(
+                "# Bundle Log\n\n## 2026-07-01\n\n* Created bundle.\n",
+                encoding="utf-8",
+            )
+            (root / "minimal.md").write_text(
+                "---\ntype: Minimal\nextension: &self\n  - *self\n---\n# Minimal\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            error_subjects = {
+                finding.subject
+                for finding in findings
+                if finding.severity == "ERROR"
+            }
+
+            self.assertIn("frontmatter", error_subjects)
+
     def test_advisories_warn_without_failing_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "okf"

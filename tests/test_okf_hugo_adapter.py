@@ -243,6 +243,25 @@ class OkfHugoAdapterTest(unittest.TestCase):
                     1,
                 )
 
+    def test_cli_reports_recursive_yaml_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            src.mkdir()
+            (src / "cyclic.md").write_text(
+                "---\ntype: Minimal\nextension: &self\n  - *self\n---\n",
+                encoding="utf-8",
+            )
+
+            stderr = StringIO()
+            with redirect_stdout(StringIO()), redirect_stderr(stderr):
+                self.assertEqual(
+                    main(["--src", str(src), "--dst", str(root / "content")]),
+                    1,
+                )
+
+            self.assertIn("recursive", stderr.getvalue())
+
     def test_cli_rejects_symbolic_link_document(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -318,6 +337,19 @@ class OkfHugoAdapterTest(unittest.TestCase):
                     FrontMatterError, "found duplicate key"
                 ):
                     split_front_matter(markdown)
+
+    def test_front_matter_rejects_recursive_yaml_alias(self) -> None:
+        markdown = (
+            "---\n"
+            "type: Minimal\n"
+            "extension: &self\n"
+            "  - *self\n"
+            "---\n"
+            "Body\n"
+        )
+
+        with self.assertRaisesRegex(FrontMatterError, "recursive"):
+            split_front_matter(markdown)
 
     def test_front_matter_ignores_indented_delimiter_in_block_scalar(self) -> None:
         metadata, body, present = split_front_matter(
@@ -498,6 +530,34 @@ class OkfHugoAdapterTest(unittest.TestCase):
                     main(["--src", str(src), "--dst", str(dst), "--clean"])
 
             self.assertTrue(site_link.is_symlink())
+            self.assertTrue((target / "keep.txt").exists())
+
+    def test_cli_rejects_symlink_hidden_by_nonexistent_dot_dot_segment(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "okf"
+            src.mkdir()
+            (src / "index.md").write_text("# Index\n", encoding="utf-8")
+
+            target = root / "target"
+            target.mkdir()
+            (target / "keep.txt").write_text("keep", encoding="utf-8")
+
+            link = root / "link"
+            link.symlink_to(target, target_is_directory=True)
+
+            # "missing" does not exist, so a naive lexical walk of each raw
+            # component never sees a symlink, yet dst.resolve() collapses
+            # "missing/.." and follows the symlink at "link".
+            dst = root / "missing" / ".." / "link"
+
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit):
+                    main(["--src", str(src), "--dst", str(dst), "--clean"])
+
+            self.assertTrue(link.is_symlink())
             self.assertTrue((target / "keep.txt").exists())
 
     def test_rewrite_markdown_links_skips_code_regions(self) -> None:

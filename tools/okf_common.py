@@ -165,6 +165,23 @@ def read_documents(root: Path) -> list[OkfDocument]:
     ]
 
 
+def _has_reference_cycle(value: Any, active: set[int]) -> bool:
+    """Detect a self-referential YAML alias, e.g. ``&self\\n  - *self``.
+
+    PyYAML happily loads such recursive object graphs, but re-dumping one
+    with alias emission disabled (as dump_front_matter does) recurses forever
+    and crashes with an uncaught RecursionError instead of a clean error.
+    """
+    if not isinstance(value, (dict, list)):
+        return False
+    marker = id(value)
+    if marker in active:
+        return True
+    active = active | {marker}
+    items = value.values() if isinstance(value, dict) else value
+    return any(_has_reference_cycle(item, active) for item in items)
+
+
 def split_front_matter(markdown: str) -> tuple[dict[str, Any] | None, str, bool]:
     lines = markdown.splitlines(keepends=True)
     if not lines or not _FRONT_MATTER_DELIMITER_RE.match(lines[0]):
@@ -193,6 +210,8 @@ def split_front_matter(markdown: str) -> tuple[dict[str, Any] | None, str, bool]
     elif isinstance(loaded, dict):
         if not all(isinstance(key, str) for key in loaded):
             raise FrontMatterError("front matter keys must be strings")
+        if _has_reference_cycle(loaded, set()):
+            raise FrontMatterError("front matter contains a recursive YAML reference")
         metadata = loaded
     else:
         raise FrontMatterError("front matter must be a YAML mapping")

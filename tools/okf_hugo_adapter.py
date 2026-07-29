@@ -173,23 +173,34 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def find_symlinked_destination(dst: Path) -> Path | None:
-    """Check every lexical component of dst, below a trusted base, for a symlink.
+    """Check every effective component of dst, below a trusted base, for a symlink.
 
     The trusted base is the working directory for a relative dst, or the
     filesystem root for an absolute one; components at or above it are not
-    flagged. Every component of dst itself is checked regardless of whether
-    it (or the full destination) already exists, so a symlinked ancestor
-    cannot hide behind an already-existing resolved destination.
+    flagged. dst's components are first normalized lexically (resolving ``..``
+    against components already walked here, without touching the filesystem)
+    so that a nonexistent component ahead of a ``..`` cannot hide a symlink
+    that only becomes visible once the path is later resolved. Every effective
+    component is checked regardless of whether it (or the full destination)
+    already exists, so a symlinked ancestor cannot hide behind an
+    already-existing resolved destination.
     """
     if dst.is_absolute():
-        current = Path(dst.anchor)
+        base = Path(dst.anchor)
         remaining_parts = dst.parts[1:]
     else:
-        current = Path.cwd()
+        base = Path.cwd()
         remaining_parts = dst.parts
 
+    effective_parts: list[str] = []
     for part in remaining_parts:
-        current = current / part
+        if part == "..":
+            if not effective_parts:
+                raise SystemExit(f"destination escapes its base directory: {dst}")
+            effective_parts.pop()
+            continue
+        effective_parts.append(part)
+        current = base.joinpath(*effective_parts)
         if current.is_symlink():
             return current
     return None
