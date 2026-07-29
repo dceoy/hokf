@@ -18,6 +18,7 @@ from tools.okf_hugo_adapter import (
     collect_directory_differences,
     generate_content,
     iter_link_targets,
+    iter_reference_definitions,
     main,
     rewrite_markdown_links,
 )
@@ -338,6 +339,19 @@ class OkfHugoAdapterTest(unittest.TestCase):
                     FrontMatterError, "found duplicate key"
                 ):
                     split_front_matter(markdown)
+
+    def test_front_matter_rejects_duplicate_nan_mapping_keys(self) -> None:
+        markdown = (
+            "---\n"
+            "type: Minimal\n"
+            "extension:\n"
+            "  .nan: first\n"
+            "  .nan: second\n"
+            "---\n"
+        )
+
+        with self.assertRaisesRegex(FrontMatterError, "found duplicate key"):
+            split_front_matter(markdown)
 
     def test_front_matter_allows_distinct_scalar_typed_nested_keys(self) -> None:
         metadata, _, present = split_front_matter(
@@ -707,6 +721,20 @@ class OkfHugoAdapterTest(unittest.TestCase):
 
             self.assertIn('[child-ref]:\n  /concepts/child/\n  "Child"', body)
             self.assertIn('[root-ref]:\n  </>\n  "Root"', body)
+
+    def test_tab_indented_reference_definition_is_not_active(self) -> None:
+        body = "[child][ref]\n\n\t[ref]: child.md\n"
+
+        self.assertEqual(iter_reference_definitions(body), [])
+        self.assertEqual(iter_link_targets(body), [])
+        self.assertEqual(
+            rewrite_markdown_links(
+                PurePosixPath("concepts/parent.md"),
+                body,
+                {PurePosixPath("concepts/child.md")},
+            ),
+            body,
+        )
 
     def test_reference_definition_title_is_not_rewritten_as_inline_link(
         self,
@@ -2392,6 +2420,34 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
             )
             self.assertIn('href="/concepts/child/">child</a>', parent_html)
             self.assertNotIn('href="child.md"', parent_html)
+
+    def test_tab_indented_reference_definition_stays_code_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "[child][ref]\n\n"
+                "\t[ref]: child.md\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn('href="/concepts/child/"', parent_html)
+            self.assertIn("[ref]: child.md", parent_html)
 
     def test_reference_definition_after_html_block_resolves_in_real_hugo_build(
         self,

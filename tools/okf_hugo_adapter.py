@@ -35,12 +35,6 @@ except ModuleNotFoundError:
     )
 
 
-# CommonMark link reference definition candidate, optionally indented up to
-# 3 spaces past a line's block-container prefix. Labels, destinations, and
-# titles are parsed structurally below. Matched per line at a specific
-# offset (see find_reference_definition_candidates), so this intentionally
-# has no "^" anchor.
-REFERENCE_DEFINITION_CANDIDATE_RE = re.compile(r"[ \t]{0,3}\[")
 # A leaf block that closes at end-of-line, so no paragraph is left open for
 # iter_reference_definitions() to consider on the next line (whether a
 # "-"-only run is read as a thematic break or a setext underline, both close
@@ -1123,10 +1117,24 @@ def find_reference_definition_candidates(
     for line in body.splitlines(keepends=True):
         text = line.rstrip("\r\n")
         tokens, content_start = parse_block_container_prefix(text)
-        match = REFERENCE_DEFINITION_CANDIDATE_RE.match(text, content_start)
-        if match is not None:
+        column = 0
+        for character in text[:content_start]:
+            column += 4 - (column % 4) if character == "\t" else 1
+        content_column = column
+        label_start = content_start
+        while label_start < len(text) and text[label_start] in " \t":
+            next_column = (
+                column + 4 - (column % 4)
+                if text[label_start] == "\t"
+                else column + 1
+            )
+            if next_column - content_column > 3:
+                break
+            column = next_column
+            label_start += 1
+        if label_start < len(text) and text[label_start] == "[":
             candidates.append(
-                (offset + match.start(), offset + match.end() - 1, tokens)
+                (offset + content_start, offset + label_start, tokens)
             )
         offset += len(line)
     return candidates
@@ -1491,6 +1499,14 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
             # paragraph, so a definition at its start is eligible.
             paragraph_open = False
 
+        leaf_block_end_line = leaf_block_end_line_by_start_line.get(i)
+        if leaf_block_end_line is not None:
+            paragraph_open = False
+            prev_blank = False
+            prev_container_tokens = effective_tokens
+            i = leaf_block_end_line + 1
+            continue
+
         definition = candidates_by_start_line.get(i)
         if definition is not None and not paragraph_open:
             accepted.append(definition)
@@ -1498,14 +1514,6 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
             prev_blank = False
             prev_container_tokens = effective_tokens
             i = line_index_of(definition.end) + 1
-            continue
-
-        leaf_block_end_line = leaf_block_end_line_by_start_line.get(i)
-        if leaf_block_end_line is not None:
-            paragraph_open = False
-            prev_blank = False
-            prev_container_tokens = effective_tokens
-            i = leaf_block_end_line + 1
             continue
 
         stripped_content = effective_content.strip()

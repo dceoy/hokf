@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -13,10 +14,25 @@ import yaml
 
 FRONT_MATTER_DELIMITER = "---"
 _FRONT_MATTER_DELIMITER_RE = re.compile(r"^---[ \t]*\r?\n?\Z")
+_YAML_FLOAT_TAG = "tag:yaml.org,2002:float"
 
 
 class FrontMatterError(ValueError):
     """Raised when a YAML front matter block cannot be parsed."""
+
+
+def _mapping_key_identity(key_node: yaml.Node, key: Any) -> tuple[str, Any]:
+    """Return a stable YAML key identity before native-dict comparison."""
+    if (
+        key_node.tag == _YAML_FLOAT_TAG
+        and isinstance(key, float)
+        and math.isnan(key)
+    ):
+        # Every YAML spelling of NaN denotes the same core-schema scalar,
+        # while Python NaN values are non-reflexive and cannot be compared
+        # reliably as set members unless PyYAML happens to reuse one object.
+        return key_node.tag, ".nan"
+    return key_node.tag, key
 
 
 class _ProducerSafeLoader(yaml.SafeLoader):
@@ -37,13 +53,12 @@ class _ProducerSafeLoader(yaml.SafeLoader):
         mapping: dict[Any, Any] = {}
         # YAML node equality is defined by tag *and* value, but Python
         # equality conflates distinct scalar types (True == 1 == 1.0). Track
-        # duplicates by (tag, value) so only genuinely repeated keys are
-        # rejected as duplicates; a same-tag key never differs from `key` in
-        # native-value hashing, so this loses no real duplicate detection.
+        # canonical identities so only genuinely repeated keys are rejected
+        # as duplicates, including non-reflexive float NaN keys.
         identities: set[tuple[str, Any]] = set()
         for key_node, value_node in node.value:
             key = self.construct_object(key_node, deep=deep)
-            identity = (key_node.tag, key)
+            identity = _mapping_key_identity(key_node, key)
             try:
                 is_duplicate = identity in identities
             except TypeError as error:
