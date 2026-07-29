@@ -1414,7 +1414,9 @@ def find_used_reference_labels(
     link_syntax_excluded's precedent for inline links), or when the match is
     a shortcut ``[label]`` immediately followed by the "(" of a real inline
     link (the label of ``[orphan](target)`` is not itself a shortcut
-    reference use).
+    reference use), or when the opening "[" is itself backslash-escaped
+    (``\\[orphan]`` renders as literal text per CommonMark, not a reference
+    use).
     """
     definition_spans = [(d.start, d.end) for d in reference_definitions]
 
@@ -1423,6 +1425,14 @@ def find_used_reference_labels(
             start < span_end and end > span_start
             for span_start, span_end in excluded_spans
         )
+
+    def opener_escaped(index: int) -> bool:
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= 0 and body[cursor] == "\\":
+            backslashes += 1
+            cursor -= 1
+        return backslashes % 2 == 1
 
     def is_inline_link_opener(label_start: int, label_end: int) -> bool:
         """True when [label_start, label_end) is exactly the label bracket
@@ -1441,7 +1451,20 @@ def find_used_reference_labels(
         return False
 
     used: set[str] = set()
-    for match in REFERENCE_USE_RE.finditer(body):
+    cursor = 0
+    while True:
+        match = REFERENCE_USE_RE.search(body, cursor)
+        if match is None:
+            break
+        if opener_escaped(match.start()):
+            # Only the escaped opener itself is disqualified, not the whole
+            # match: re-scan from just past it, since ``\[orphan][ref]``
+            # still contains a real ``[ref]`` shortcut use starting one
+            # character later that a whole-match skip would otherwise miss.
+            cursor = match.start() + 1
+            continue
+        cursor = match.end()
+
         if any(
             match.start() < d_end and match.end() > d_start
             for d_start, d_end in definition_spans
@@ -1663,16 +1686,30 @@ def decode_commonmark_link_path(raw_path: str) -> str:
     return unquote("".join(decoded))
 
 
+GENERIC_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
 def is_external_or_special_link(target: str) -> bool:
     # Callers unwrap a `<...>`-bracketed destination before reaching this
     # check, so target never itself starts with "<" here. Check both the raw
     # spelling and decoded path so schemes written with CommonMark character
-    # references/escapes are not misclassified as bundle-relative paths.
-    if "://" in target or target.startswith(("#", "mailto:", "tel:", "{{")):
+    # references/escapes are not misclassified as bundle-relative paths. Any
+    # absolute URI (RFC 3986 scheme grammar, e.g. "urn:example:manual.md")
+    # is external even without "//", not just the "mailto:"/"tel:" special
+    # cases.
+    if (
+        "://" in target
+        or target.startswith(("#", "mailto:", "tel:", "{{"))
+        or GENERIC_URI_SCHEME_RE.match(target)
+    ):
         return True
     raw_path, _ = split_link_suffix(target)
     decoded_path = decode_commonmark_link_path(raw_path)
-    return "://" in decoded_path or decoded_path.startswith(("mailto:", "tel:", "{{"))
+    return (
+        "://" in decoded_path
+        or decoded_path.startswith(("mailto:", "tel:", "{{"))
+        or bool(GENERIC_URI_SCHEME_RE.match(decoded_path))
+    )
 
 
 def split_link_suffix(target: str) -> tuple[str, str]:

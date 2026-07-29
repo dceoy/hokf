@@ -2259,6 +2259,57 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
 
         self.assertEqual(iter_link_targets(body), [])
 
+    def test_escaped_shortcut_opener_is_not_a_reference_use(self) -> None:
+        # `\[orphan]` renders as literal bracketed text under CommonMark
+        # (Example 563), not a shortcut reference use, so the definition
+        # sharing its label must not be exposed as a validated link target.
+        body = "See \\[orphan] for details.\n\n[orphan]: concepts/orphan.md\n"
+
+        self.assertEqual(iter_link_targets(body), [])
+
+    def test_reference_use_immediately_after_an_escaped_opener_still_counts(
+        self,
+    ) -> None:
+        # An escaped opener disqualifies only itself, not the rest of the
+        # scan: `\[orphan][ref]` renders the escaped `[orphan]` as literal
+        # text but the immediately following `[ref]` is still a real
+        # shortcut reference use of "ref", so its definition must remain a
+        # validated link target.
+        body = "See \\[orphan][ref] here.\n\n[ref]: child.md\n"
+
+        self.assertEqual(iter_link_targets(body), ["child.md"])
+
+    def test_escaped_backslash_before_opener_is_not_an_escaped_opener(
+        self,
+    ) -> None:
+        # `\\[orphan]` is an escaped backslash followed by an *unescaped*
+        # opener, so it is a real shortcut reference use, not the literal-
+        # text case; the even/odd backslash-run parity must tell these
+        # apart.
+        body = "See \\\\[orphan] for details.\n\n[orphan]: concepts/orphan.md\n"
+
+        self.assertEqual(iter_link_targets(body), ["concepts/orphan.md"])
+
+    def test_generic_absolute_uri_scheme_is_not_rewritten_as_bundle_relative(
+        self,
+    ) -> None:
+        # "urn:example:manual.md" has a scheme but no "//"; it must still be
+        # classified as an external/absolute URI (RFC 3986 scheme grammar),
+        # not resolved and rewritten to a same-named bundle-relative OKF
+        # concept route.
+        body = "See [manual](urn:example:manual.md).\n"
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/urn:example:manual.md"),
+            },
+        )
+
+        self.assertEqual(rewritten, body)
+
     def test_reference_label_text_may_contain_a_code_span(self) -> None:
         # Content elsewhere in a reference-style link's text may legitimately
         # overlap a code span without invalidating the link, mirroring
