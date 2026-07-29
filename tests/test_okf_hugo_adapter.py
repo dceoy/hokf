@@ -1098,6 +1098,27 @@ class OkfHugoAdapterTest(unittest.TestCase):
         self.assertIn("Real link: [child](/concepts/child/)", rewritten)
         self.assertEqual(iter_link_targets(body), ["child.md"])
 
+    def test_rewrite_markdown_links_skips_indented_code_as_first_list_block(
+        self,
+    ) -> None:
+        body = (
+            "-     [example](child.md)\n\n"
+            "Real link: [child](child.md)\n"
+        )
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/child.md"),
+            },
+        )
+
+        self.assertIn("-     [example](child.md)", rewritten)
+        self.assertIn("Real link: [child](/concepts/child/)", rewritten)
+        self.assertEqual(iter_link_targets(body), ["child.md"])
+
     def test_rewrite_markdown_links_treats_indented_list_continuation_as_prose(
         self,
     ) -> None:
@@ -1243,6 +1264,35 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
                 "# Parent\n\n"
                 "- Example\n\n"
                 "      [example](child.md)\n\n"
+                "Real link: [child](child.md)\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("<code>[example](child.md)", parent_html)
+            self.assertIn('href="/concepts/child/">child</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_first_list_block_indented_code_is_preserved_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "-     [example](child.md)\n\n"
                 "Real link: [child](child.md)\n",
                 encoding="utf-8",
             )

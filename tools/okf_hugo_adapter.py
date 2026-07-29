@@ -856,10 +856,14 @@ def parse_block_container_prefix(text: str) -> tuple[tuple[tuple[str, int], ...]
             while (
                 whitespace_end < len(text)
                 and text[whitespace_end] in " \t"
-                and whitespace_end - marker_end < 4
             ):
                 whitespace_end += 1
             if whitespace_end > marker_end:
+                # When the first block starts with 5+ whitespace characters,
+                # CommonMark assigns only one to the list prefix; the
+                # remaining indentation can therefore start a code block.
+                if whitespace_end - marker_end > 4:
+                    whitespace_end = marker_end + 1
                 tokens.append(("list", whitespace_end - marker_start))
                 cursor = whitespace_end
                 continue
