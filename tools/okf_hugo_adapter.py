@@ -1936,7 +1936,7 @@ def is_external_or_special_link(target: str) -> bool:
     # cases.
     if (
         "://" in target
-        or target.startswith(("#", "mailto:", "tel:", "{{"))
+        or target.startswith(("//", "#", "mailto:", "tel:", "{{"))
         or GENERIC_URI_SCHEME_RE.match(target)
     ):
         return True
@@ -1944,7 +1944,7 @@ def is_external_or_special_link(target: str) -> bool:
     commonmark_path = decode_commonmark_link_syntax(raw_path)
     return (
         "://" in commonmark_path
-        or commonmark_path.startswith(("mailto:", "tel:", "{{"))
+        or commonmark_path.startswith(("//", "mailto:", "tel:", "{{"))
         or bool(GENERIC_URI_SCHEME_RE.match(commonmark_path))
     )
 

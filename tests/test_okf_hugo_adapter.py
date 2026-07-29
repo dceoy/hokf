@@ -2550,6 +2550,27 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
 
         self.assertEqual(rewritten, body)
 
+    def test_protocol_relative_urls_are_not_rewritten_as_bundle_relative(
+        self,
+    ) -> None:
+        # RFC 3986 network-path references remain external even when their
+        # raw or CommonMark-decoded path matches a bundle-relative concept.
+        body = (
+            "See [raw](//host/path.md).\n"
+            "See [decoded](&#47;&#47;host/path.md).\n"
+        )
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("host/path.md"),
+            },
+        )
+
+        self.assertEqual(rewritten, body)
+
     def test_percent_encoded_colon_remains_bundle_relative(self) -> None:
         # Percent-decoding is required to find the OKF path, but an encoded
         # colon does not create an absolute URI scheme during URL parsing.

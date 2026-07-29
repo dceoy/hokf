@@ -204,6 +204,42 @@ class OkfValidateTest(unittest.TestCase):
             # all for it; it must not be reported as a broken link either.
             self.assertNotIn("link:concepts/unused.md", warning_subjects)
 
+    def test_protocol_relative_urls_are_external_to_link_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            (root / "host").mkdir(parents=True)
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n"
+                "# Concepts\n\n"
+                "See [colliding remote](//host/path.md).\n"
+                "See [missing remote](&#47;&#47;missing/path.md).\n",
+                encoding="utf-8",
+            )
+            (root / "host" / "path.md").write_text(
+                "---\n"
+                "type: Minimal\n"
+                "title: Local path\n"
+                "description: A local concept that shares the remote path.\n"
+                "---\n"
+                "# Local path\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            warning_keys = {
+                (finding.path, finding.subject)
+                for finding in findings
+                if finding.severity == "WARNING"
+            }
+
+            # The colliding network-path reference must not index the local
+            # concept, and the unmatched one must not become a broken link.
+            self.assertIn(("host/path.md", "index"), warning_keys)
+            self.assertNotIn(
+                ("index.md", "link:&#47;&#47;missing/path.md"),
+                warning_keys,
+            )
+
     def test_balanced_reference_link_text_counts_as_indexed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "okf"
