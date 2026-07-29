@@ -16,8 +16,11 @@ try:
     from tools.okf_common import FrontMatterError, OkfDocument, read_document
     from tools.okf_hugo_adapter import (
         decode_commonmark_link_path,
+        find_code_block_spans,
+        find_html_block_spans,
         is_external_or_special_link,
         iter_link_targets,
+        merge_spans,
         normalize_posix_path,
         split_link_suffix,
     )
@@ -29,16 +32,19 @@ except ModuleNotFoundError:
     )
     from okf_hugo_adapter import (  # type: ignore[no-redef]
         decode_commonmark_link_path,
+        find_code_block_spans,
+        find_html_block_spans,
         is_external_or_special_link,
         iter_link_targets,
+        merge_spans,
         normalize_posix_path,
         split_link_suffix,
     )
 
 
-DATE_HEADING_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
-ANY_LEVEL_TWO_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
-TOP_LEVEL_HEADING_RE = re.compile(r"^#\s+\S", re.MULTILINE)
+ATX_HEADING_LINE_RE = re.compile(
+    r"^[ \t]{0,3}(#{1,6})(?:[ \t]+(.*?)[ \t]*|[ \t]*)$"
+)
 ACTOR_RE = re.compile(r"^(?:human:[^\s:]+|process:[^\s:]+|[^\s/]+/[^\s/]+)$")
 TAG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 STATUS_VALUES = {"draft", "stable", "deprecated"}
@@ -53,6 +59,13 @@ class Finding:
 
     def render(self) -> str:
         return f"{self.severity} {self.path} [{self.subject}]: {self.message}"
+
+
+@dataclass(frozen=True)
+class MarkdownHeading:
+    level: int
+    text: str
+    line_start: int
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -170,7 +183,8 @@ def validate_index(document: OkfDocument) -> list[Finding]:
                 )
             )
 
-    if not TOP_LEVEL_HEADING_RE.search(document.body):
+    headings = find_markdown_headings(document.body)
+    if not any(heading.level == 1 and heading.text for heading in headings):
         findings.append(
             error(
                 document,
@@ -191,13 +205,22 @@ def validate_log(document: OkfDocument) -> list[Finding]:
                 "reserved log.md files must not use front matter",
             )
         )
-    if not TOP_LEVEL_HEADING_RE.search(document.body):
+    headings = find_markdown_headings(document.body)
+    first_content_line = first_nonblank_line_start(document.body)
+    if not any(
+        heading.line_start == first_content_line
+        and heading.level == 1
+        and heading.text
+        for heading in headings
+    ):
         findings.append(
             error(document, "body", "log must start with a level-one title")
         )
 
-    headings = ANY_LEVEL_TWO_HEADING_RE.findall(document.body)
-    if not headings:
+    level_two_headings = [
+        heading.text for heading in headings if heading.level == 2
+    ]
+    if not level_two_headings:
         findings.append(
             error(
                 document,
@@ -208,7 +231,7 @@ def validate_log(document: OkfDocument) -> list[Finding]:
         return findings
 
     parsed_dates: list[date] = []
-    for heading in headings:
+    for heading in level_two_headings:
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", heading):
             findings.append(
                 error(
@@ -234,6 +257,49 @@ def validate_log(document: OkfDocument) -> list[Finding]:
             )
         )
     return findings
+
+
+def find_markdown_headings(body: str) -> list[MarkdownHeading]:
+    """Return ATX headings outside CommonMark code and raw-HTML blocks."""
+    code_spans = find_code_block_spans(body)
+    excluded_spans = merge_spans(
+        code_spans + find_html_block_spans(body, code_spans)
+    )
+    headings: list[MarkdownHeading] = []
+    excluded_index = 0
+    offset = 0
+    for line in body.splitlines(keepends=True):
+        while (
+            excluded_index < len(excluded_spans)
+            and excluded_spans[excluded_index][1] <= offset
+        ):
+            excluded_index += 1
+        is_excluded = (
+            excluded_index < len(excluded_spans)
+            and excluded_spans[excluded_index][0] <= offset
+        )
+        if not is_excluded:
+            match = ATX_HEADING_LINE_RE.fullmatch(line.rstrip("\r\n"))
+            if match is not None:
+                headings.append(
+                    MarkdownHeading(
+                        level=len(match.group(1)),
+                        text=(match.group(2) or "").strip(),
+                        line_start=offset,
+                    )
+                )
+        offset += len(line)
+    return headings
+
+
+def first_nonblank_line_start(body: str) -> int | None:
+    """Return the offset of the first line containing non-whitespace text."""
+    offset = 0
+    for line in body.splitlines(keepends=True):
+        if line.rstrip("\r\n").strip(" \t"):
+            return offset
+        offset += len(line)
+    return None
 
 
 def validate_concept(document: OkfDocument, current_date: date) -> list[Finding]:
@@ -634,7 +700,7 @@ def resolve_link_path(
         resolved = normalize_posix_path(source_path.parent / link_path)
     if link_path.endswith("/"):
         resolved /= "index.md"
-    elif not PurePosixPath(link_path).suffix:
+    elif not link_path.endswith(".md"):
         return None
     return resolved
 

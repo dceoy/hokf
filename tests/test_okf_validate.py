@@ -102,6 +102,87 @@ class OkfValidateTest(unittest.TestCase):
             self.assertIn("status", warning_subjects)
             self.assertIn("stale_after", warning_subjects)
 
+    def test_reserved_headings_inside_literal_blocks_do_not_satisfy_structure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n"
+                "```markdown\n"
+                "# Example Index\n"
+                "```\n",
+                encoding="utf-8",
+            )
+            (root / "log.md").write_text(
+                "    # Example Log\n"
+                "    ## 2026-07-03\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            error_keys = {
+                (finding.path, finding.subject)
+                for finding in findings
+                if finding.severity == "ERROR"
+            }
+
+            self.assertIn(("index.md", "body"), error_keys)
+            self.assertIn(("log.md", "body"), error_keys)
+            self.assertIn(("log.md", "date headings"), error_keys)
+
+    def test_reserved_headings_inside_raw_html_do_not_satisfy_structure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text(
+                "<div>\n# Example Index\n</div>\n",
+                encoding="utf-8",
+            )
+            (root / "log.md").write_text(
+                "<div>\n"
+                "# Example Log\n"
+                "## 2026-07-03\n"
+                "</div>\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            error_keys = {
+                (finding.path, finding.subject)
+                for finding in findings
+                if finding.severity == "ERROR"
+            }
+
+            self.assertIn(("index.md", "body"), error_keys)
+            self.assertIn(("log.md", "body"), error_keys)
+            self.assertIn(("log.md", "date headings"), error_keys)
+
+    def test_log_title_must_be_the_first_content_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text("# Index\n", encoding="utf-8")
+            (root / "log.md").write_text(
+                "Introductory prose.\n\n"
+                "# Bundle Log\n\n"
+                "## 2026-07-03\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            error_keys = {
+                (finding.path, finding.subject)
+                for finding in findings
+                if finding.severity == "ERROR"
+            }
+
+            self.assertIn(("log.md", "body"), error_keys)
+            self.assertNotIn(("log.md", "date headings"), error_keys)
+
     def test_recursive_yaml_alias_reports_frontmatter_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "okf"
@@ -422,6 +503,33 @@ class OkfValidateTest(unittest.TestCase):
             }
 
             self.assertIn("link:missing.md", warning_subjects)
+
+    def test_non_markdown_local_targets_are_not_concept_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text(
+                "# Concepts\n\n"
+                "![Diagram](diagram.png)\n\n"
+                "[PDF](manual.pdf)\n\n"
+                "[Script](references/check.py)\n\n"
+                "[Missing concept](missing.md)\n\n"
+                "[Missing section](guide/)\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            warning_subjects = {
+                finding.subject
+                for finding in findings
+                if finding.severity == "WARNING"
+            }
+
+            self.assertNotIn("link:diagram.png", warning_subjects)
+            self.assertNotIn("link:manual.pdf", warning_subjects)
+            self.assertNotIn("link:references/check.py", warning_subjects)
+            self.assertIn("link:missing.md", warning_subjects)
+            self.assertIn("link:guide/", warning_subjects)
 
     def test_link_shaped_text_inside_code_block_is_not_flagged_as_broken(
         self,
