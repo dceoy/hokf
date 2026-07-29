@@ -122,6 +122,9 @@ RAW_HTML_RE = re.compile(
     r")",
     re.DOTALL,
 )
+URI_AUTOLINK_RE = re.compile(
+    r"<[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\x00-\x20<>]*>"
+)
 
 
 @dataclass(frozen=True)
@@ -762,6 +765,32 @@ def find_link_exclusion_spans(body: str) -> list[tuple[int, int]]:
     return merge_spans(code_spans + find_raw_html_spans(body, code_spans))
 
 
+def find_bracket_precedence_spans(
+    body: str,
+    excluded_spans: list[tuple[int, int]] | None = None,
+) -> list[tuple[int, int]]:
+    """Return inline ranges whose brackets do not participate in links.
+
+    CommonMark resolves code spans, autolinks, and raw HTML before link
+    brackets. The ordinary link exclusions already cover code and raw HTML;
+    add URI autolinks that do not overlap either kind of excluded range.
+    """
+    excluded = (
+        find_link_exclusion_spans(body)
+        if excluded_spans is None
+        else excluded_spans
+    )
+    spans = list(excluded)
+    for match in URI_AUTOLINK_RE.finditer(body):
+        if any(
+            match.start() < span_end and match.end() > span_start
+            for span_start, span_end in excluded
+        ):
+            continue
+        spans.append((match.start(), match.end()))
+    return merge_spans(spans)
+
+
 def consume_indent(text: str, cursor: int, width: int) -> int | None:
     """Consume width columns of spaces/tabs from cursor."""
     columns = 0
@@ -888,7 +917,10 @@ def parse_inline_link_tail(
     )
 
 
-def find_inline_link_openers(body: str) -> list[InlineLink]:
+def find_inline_link_openers(
+    body: str,
+    excluded_spans: list[tuple[int, int]] | None = None,
+) -> list[InlineLink]:
     """Locate and parse CommonMark inline links and images.
 
     Brackets are tracked with a stack so a "]" always matches the nearest
@@ -904,10 +936,28 @@ def find_inline_link_openers(body: str) -> list[InlineLink]:
     currently open across it.
     """
     links: list[InlineLink] = []
+    precedence_spans = find_bracket_precedence_spans(body, excluded_spans)
+    precedence_index = 0
     length = len(body)
     stack: list[dict[str, Any]] = []
     index = 0
     while index < length:
+        while (
+            precedence_index < len(precedence_spans)
+            and precedence_spans[precedence_index][1] <= index
+        ):
+            precedence_index += 1
+        if (
+            precedence_index < len(precedence_spans)
+            and precedence_spans[precedence_index][0] <= index
+        ):
+            span_end = precedence_spans[precedence_index][1]
+            if BLANK_LINE_RE.search(body, index, span_end):
+                for entry in stack:
+                    entry["active"] = False
+            index = span_end
+            continue
+
         char = body[index]
         if char == "\\" and index + 1 < length:
             index += 2
@@ -1357,19 +1407,17 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
     return accepted
 
 
-def iter_inline_links(body: str) -> list[InlineLink]:
+def iter_inline_links(
+    body: str,
+    excluded_spans: list[tuple[int, int]] | None = None,
+) -> list[InlineLink]:
     """Parse inline link destinations and titles needed for safe rewriting.
 
     find_inline_link_openers() does the full CommonMark bracket-matching and
     destination/title parsing; this only exists as the stable name the rest
     of the adapter calls.
     """
-    return find_inline_link_openers(body)
-
-
-REFERENCE_USE_RE = re.compile(
-    r"\[((?:\\.|[^\[\]])*)\](?:\[((?:\\.|[^\[\]])*)\])?"
-)
+    return find_inline_link_openers(body, excluded_spans)
 
 
 def normalize_reference_label(label: str) -> str:
@@ -1396,99 +1444,180 @@ def find_used_reference_labels(
     body: str,
     reference_definitions: list[ReferenceDefinition],
     excluded_spans: list[tuple[int, int]],
-    inline_links: list[InlineLink],
 ) -> set[str]:
-    """Conservatively collect normalized labels used by a reference-style
-    link/image: full ``[text][label]``, collapsed ``[text][]``, or shortcut
-    ``[label]``. This intentionally skips CommonMark's full bracket/
-    precedence resolution for nested brackets: over-counting a bracketed
-    phrase as a "use" is harmless, since it only falls back to today's
-    behavior of treating the definition as used; under-counting could
-    wrongly hide a real link. Matches are excluded when they fall inside a
-    reference definition itself (otherwise every "[label]:" definition
-    would trivially count as a use of its own label), when one of the
-    bracket *delimiters* -- not the whole label -- sits inside a code span
-    or raw HTML span (a code-span lookalike such as `` `[orphan]` `` is not
-    a reference use, but content elsewhere in the label may legitimately
-    overlap a code span, e.g. ``[the `child` thing][ref]``, mirroring
-    link_syntax_excluded's precedent for inline links), or when the match is
-    a shortcut ``[label]`` immediately followed by the "(" of a real inline
-    link (the label of ``[orphan](target)`` is not itself a shortcut
-    reference use), or when the opening "[" is itself backslash-escaped
-    (``\\[orphan]`` renders as literal text per CommonMark, not a reference
-    use).
+    """Collect labels used by actual CommonMark reference links/images.
+
+    The bracket stack accepts balanced brackets in link text, gives inline
+    links precedence over shortcut references, and applies the same
+    link/image deactivation rules as find_inline_link_openers(). Brackets
+    inside code spans, URI autolinks, raw HTML, or reference definitions do
+    not participate in matching.
     """
-    definition_spans = [(d.start, d.end) for d in reference_definitions]
+    definitions_by_label = first_definition_wins(reference_definitions)
+    ignored_spans = merge_spans(
+        find_bracket_precedence_spans(body, excluded_spans)
+        + [(definition.start, definition.end) for definition in reference_definitions]
+    )
 
-    def excluded(start: int, end: int) -> bool:
-        return any(
-            start < span_end and end > span_start
-            for span_start, span_end in excluded_spans
-        )
-
-    def opener_escaped(index: int) -> bool:
-        backslashes = 0
-        cursor = index - 1
-        while cursor >= 0 and body[cursor] == "\\":
-            backslashes += 1
-            cursor -= 1
-        return backslashes % 2 == 1
-
-    def is_inline_link_opener(label_start: int, label_end: int) -> bool:
-        """True when [label_start, label_end) is exactly the label bracket
-        span of some inline link's "[label](" opener -- i.e. label_end is
-        immediately followed by the "(" belonging to a parsed InlineLink
-        whose own opening bracket (skipping a leading "!" on images) sits at
-        label_start.
-        """
-        for link in inline_links:
-            paren = link.start + link.prefix.rfind("(")
-            if label_end != paren:
+    def consume_explicit_label(start: int) -> tuple[str, int] | None:
+        if start >= len(body) or body[start] != "[":
+            return None
+        cursor = start + 1
+        characters = 0
+        line_endings = 0
+        while cursor < len(body):
+            char = body[cursor]
+            if (
+                char == "\\"
+                and cursor + 1 < len(body)
+                and body[cursor + 1] in ASCII_PUNCTUATION
+            ):
+                characters += 1
+                cursor += 2
                 continue
-            opener = link.start + 1 if link.prefix.startswith("!") else link.start
-            if label_start == opener:
-                return True
-        return False
+            if char == "[":
+                return None
+            if char == "]":
+                return body[start + 1 : cursor], cursor + 1
+            line_end = consume_line_ending(body, cursor)
+            if line_end is not None:
+                line_endings += 1
+                if line_endings > 1:
+                    return None
+                characters += 1
+                cursor = line_end
+                continue
+            characters += 1
+            if characters > 999:
+                return None
+            cursor += 1
+        return None
+
+    def shortcut_label(text: str) -> str | None:
+        cursor = 0
+        characters = 0
+        line_endings = 0
+        while cursor < len(text):
+            char = text[cursor]
+            if (
+                char == "\\"
+                and cursor + 1 < len(text)
+                and text[cursor + 1] in ASCII_PUNCTUATION
+            ):
+                characters += 1
+                cursor += 2
+                continue
+            if char in "[]":
+                return None
+            line_end = consume_line_ending(text, cursor)
+            if line_end is not None:
+                line_endings += 1
+                if line_endings > 1:
+                    return None
+                characters += 1
+                cursor = line_end
+                continue
+            characters += 1
+            if characters > 999:
+                return None
+            cursor += 1
+        return text
+
+    def record_reference(
+        raw_label: str, entry: dict[str, Any], stack: list[dict[str, Any]]
+    ) -> bool:
+        normalized = normalize_reference_label(raw_label)
+        if normalized not in definitions_by_label:
+            return False
+        used.add(normalized)
+        if not entry["is_image"]:
+            for older in stack:
+                older["active"] = False
+        return True
 
     used: set[str] = set()
+    stack: list[dict[str, Any]] = []
+    ignored_index = 0
     cursor = 0
-    while True:
-        match = REFERENCE_USE_RE.search(body, cursor)
-        if match is None:
-            break
-        if opener_escaped(match.start()):
-            # Only the escaped opener itself is disqualified, not the whole
-            # match: re-scan from just past it, since ``\[orphan][ref]``
-            # still contains a real ``[ref]`` shortcut use starting one
-            # character later that a whole-match skip would otherwise miss.
-            cursor = match.start() + 1
-            continue
-        cursor = match.end()
-
-        if any(
-            match.start() < d_end and match.end() > d_start
-            for d_start, d_end in definition_spans
+    while cursor < len(body):
+        while (
+            ignored_index < len(ignored_spans)
+            and ignored_spans[ignored_index][1] <= cursor
         ):
+            ignored_index += 1
+        if (
+            ignored_index < len(ignored_spans)
+            and ignored_spans[ignored_index][0] <= cursor
+        ):
+            span_end = ignored_spans[ignored_index][1]
+            if BLANK_LINE_RE.search(body, cursor, span_end):
+                for entry in stack:
+                    entry["active"] = False
+            cursor = span_end
             continue
 
-        text_start, text_end = match.start(1), match.end(1)
-        if excluded(match.start(), text_start) or excluded(text_end, text_end + 1):
+        char = body[cursor]
+        if char == "\\" and cursor + 1 < len(body):
+            cursor += 2
+            continue
+        if char in "\r\n":
+            if BLANK_LINE_RE.match(body, cursor):
+                for entry in stack:
+                    entry["active"] = False
+            next_line = consume_line_ending(body, cursor)
+            assert next_line is not None
+            cursor = next_line
+            continue
+        if char == "[":
+            label_start = (
+                cursor - 1
+                if cursor > 0 and body[cursor - 1] == "!"
+                else cursor
+            )
+            stack.append(
+                {
+                    "opener": cursor,
+                    "is_image": label_start != cursor,
+                    "active": True,
+                }
+            )
+            cursor += 1
+            continue
+        if char != "]" or not stack:
+            cursor += 1
             continue
 
-        explicit_label = match.group(2)
-        if explicit_label is not None:
-            label_start, label_end = match.start(2), match.end(2)
-            if excluded(label_start - 1, label_start) or excluded(
-                label_end, label_end + 1
-            ):
+        entry = stack.pop()
+        if not entry["active"]:
+            cursor += 1
+            continue
+
+        if cursor + 1 < len(body) and body[cursor + 1] == "(":
+            inline = parse_inline_link_tail(
+                body,
+                entry["opener"] - (1 if entry["is_image"] else 0),
+                cursor + 2,
+            )
+            if inline is not None:
+                if not entry["is_image"]:
+                    for older in stack:
+                        older["active"] = False
+                cursor = inline.end
                 continue
-        elif is_inline_link_opener(match.start(), match.end()):
-            continue
 
-        text = match.group(1)
-        normalized = normalize_reference_label(explicit_label or text)
-        if normalized:
-            used.add(normalized)
+        explicit = consume_explicit_label(cursor + 1)
+        text = body[entry["opener"] + 1 : cursor]
+        if explicit is not None:
+            explicit_label, explicit_end = explicit
+            label = text if explicit_label == "" else explicit_label
+            if record_reference(label, entry, stack):
+                cursor = explicit_end
+                continue
+
+        label = shortcut_label(text)
+        if label is not None:
+            record_reference(label, entry, stack)
+        cursor += 1
     return used
 
 
@@ -1538,7 +1667,7 @@ def iter_link_targets(body: str) -> list[str]:
             for definition in reference_definitions
         )
 
-    inline_links = iter_inline_links(body)
+    inline_links = iter_inline_links(body, excluded_spans)
     targets = [
         unwrap_angle_brackets(link.raw_target)
         for link in inline_links
@@ -1546,7 +1675,7 @@ def iter_link_targets(body: str) -> list[str]:
         and not in_reference_definition(link.start, link.end)
     ]
     used_labels = find_used_reference_labels(
-        body, reference_definitions, excluded_spans, inline_links
+        body, reference_definitions, excluded_spans
     )
     targets.extend(
         unwrap_angle_brackets(definition.raw_target)
@@ -1590,7 +1719,7 @@ def rewrite_markdown_links(
 
     replacements: list[tuple[int, int, str]] = []
 
-    for link in iter_inline_links(body):
+    for link in iter_inline_links(body, excluded_spans):
         if link_syntax_excluded(link, excluded_spans) or in_reference_definition(
             link.start, link.end
         ):

@@ -1712,6 +1712,38 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
             self.assertIn("-->child<!--", parent_html)
             self.assertNotIn('href="child.md"', parent_html)
 
+    def test_closing_brackets_in_inline_nodes_do_not_close_link_label(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "Code: [see `]` child](child.md).\n\n"
+                'HTML: [see <span title="]">child</span>](child.md).\n\n'
+                "Autolink: [see <https://example.com/?q=]> child](child.md).\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            # Code spans, URI autolinks, and raw HTML are parsed before link
+            # brackets in CommonMark. A "]" inside any of those inline nodes
+            # therefore cannot close the surrounding link label.
+            self.assertEqual(parent_html.count('href="/concepts/child/"'), 3)
+            self.assertNotIn('href="child.md"', parent_html)
+
     def test_link_shaped_text_opened_inside_code_span_stays_literal(self) -> None:
         # The opposite direction: when the opening "[" itself sits inside a
         # code span (here the one-character code span `` `[` ``), it is not
@@ -2332,6 +2364,17 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
         # link_syntax_excluded's precedent for inline links; only a
         # delimiter actually inside the code span should disqualify a match.
         body = "See [the `child` thing][ref].\n\n[ref]: child.md\n"
+
+        self.assertEqual(iter_link_targets(body), ["child.md"])
+
+    def test_reference_use_link_text_may_contain_balanced_brackets(self) -> None:
+        # Full reference links permit balanced brackets in their link text.
+        # The trailing prose after the nested bracket prevents a flat regex
+        # from accidentally treating the inner bracket as the link text.
+        body = (
+            "See [see [child] now][ref].\n\n"
+            "[ref]: child.md\n"
+        )
 
         self.assertEqual(iter_link_targets(body), ["child.md"])
 

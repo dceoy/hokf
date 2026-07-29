@@ -204,6 +204,33 @@ class OkfValidateTest(unittest.TestCase):
             # all for it; it must not be reported as a broken link either.
             self.assertNotIn("link:concepts/unused.md", warning_subjects)
 
+    def test_balanced_reference_link_text_counts_as_indexed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            (root / "concepts").mkdir(parents=True)
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n"
+                "# Concepts\n\n"
+                "See [the [Alpha] concept][alpha-ref].\n\n"
+                "[alpha-ref]: concepts/alpha.md\n",
+                encoding="utf-8",
+            )
+            (root / "concepts" / "alpha.md").write_text(
+                "---\ntype: Minimal\n---\n# Alpha\n", encoding="utf-8"
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            warning_subjects = {
+                finding.subject
+                for finding in findings
+                if finding.severity == "WARNING"
+            }
+
+            self.assertNotIn("index", warning_subjects)
+            self.assertFalse(
+                any(subject.startswith("link:") for subject in warning_subjects)
+            )
+
     def test_html_comment_link_does_not_count_as_indexed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "okf"
