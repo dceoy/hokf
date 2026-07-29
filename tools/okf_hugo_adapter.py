@@ -889,7 +889,7 @@ def parse_inline_link_tail(
     """
     cursor = consume_link_whitespace(body, destination_start)
     target_start = cursor
-    target_end = consume_link_destination(body, cursor)
+    target_end = consume_link_destination(body, cursor, allow_empty=True)
     if target_end is None:
         return None
     cursor = target_end
@@ -1160,8 +1160,15 @@ def consume_reference_definition_line_ending(
     return line_end - len(stripped)
 
 
-def consume_link_destination(body: str, cursor: int) -> int | None:
-    """Return the end of a CommonMark link destination, or None if invalid."""
+def consume_link_destination(
+    body: str, cursor: int, *, allow_empty: bool = False
+) -> int | None:
+    """Return the end of a CommonMark link destination, or None if invalid.
+
+    Inline links may omit their destination entirely (``[label]()``), while
+    reference definitions require a destination unless they use the explicit
+    empty ``<>`` form.
+    """
     start = cursor
     if cursor < len(body) and body[cursor] == "<":
         cursor += 1
@@ -1191,7 +1198,7 @@ def consume_link_destination(body: str, cursor: int) -> int | None:
                 break
             paren_depth -= 1
         cursor += 1
-    if cursor == start or paren_depth != 0:
+    if (cursor == start and not allow_empty) or paren_depth != 0:
         return None
     return cursor
 
@@ -1613,6 +1620,10 @@ def find_used_reference_labels(
             if record_reference(label, entry, stack):
                 cursor = explicit_end
                 continue
+            # Any syntactically valid explicit label suppresses shortcut
+            # fallback, even when that label has no matching definition.
+            cursor = explicit_end
+            continue
 
         label = shortcut_label(text)
         if label is not None:

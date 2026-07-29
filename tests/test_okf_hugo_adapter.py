@@ -2283,6 +2283,26 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
 
         self.assertEqual(iter_link_targets(body), ["https://example.com"])
 
+    def test_empty_inline_destination_precedes_shortcut_reference(self) -> None:
+        # CommonMark Example 567 parses [foo]() as an inline link with an
+        # empty destination, so a definition sharing its label remains
+        # unused rather than taking shortcut-reference precedence.
+        body = "[foo]()\n\n[foo]: concepts/foo.md\n"
+
+        self.assertEqual(iter_link_targets(body), [""])
+
+    def test_undefined_explicit_label_suppresses_shortcut_fallback(self) -> None:
+        # In CommonMark Example 571, the explicit [bar] after [foo] prevents
+        # [foo] from falling back to a shortcut reference even though bar is
+        # undefined. The following [bar][baz] still resolves through baz.
+        body = (
+            "[foo][bar][baz]\n\n"
+            "[foo]: concepts/foo.md\n"
+            "[baz]: concepts/baz.md\n"
+        )
+
+        self.assertEqual(iter_link_targets(body), ["concepts/baz.md"])
+
     def test_code_span_shortcut_lookalike_is_not_a_reference_use(self) -> None:
         # A shortcut-reference-shaped code span renders as literal code, not
         # a reference use, so the definition sharing its label must not be
