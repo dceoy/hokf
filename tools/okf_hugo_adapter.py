@@ -302,8 +302,9 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
             last_nonblank_text = text
             continue
 
+        indented_content = text[content_start:]
         if (
-            INDENTED_LINE_RE.match(line)
+            INDENTED_LINE_RE.match(indented_content)
             and prev_blank
             and not LIST_MARKER_RE.match(last_nonblank_text)
             and not INDENTED_LINE_RE.match(last_nonblank_text)
@@ -311,11 +312,16 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
             last_content = i
             j = i
             while j < n:
-                if INDENTED_LINE_RE.match(lines[j]):
+                candidate = strip_block_container_prefix(
+                    lines[j].rstrip("\r\n"), container_tokens
+                )
+                if candidate is None:
+                    break
+                if INDENTED_LINE_RE.match(candidate):
                     last_content = j
                     j += 1
                     continue
-                if lines[j].strip("\r\n") == "":
+                if candidate == "":
                     j += 1
                     continue
                 break
@@ -327,9 +333,10 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
             last_nonblank_text = lines[last_content].rstrip("\r\n")
             continue
 
-        if text.strip() != "":
+        container_content = text[content_start:]
+        if container_content.strip() != "":
             last_nonblank_text = text
-        prev_blank = text.strip() == ""
+        prev_blank = container_content.strip() == ""
         i += 1
 
     block_spans = list(spans)
@@ -888,9 +895,9 @@ def rewrite_link_target(
         return target
 
     # Re-encode the resolved path segments (preserving "/") before appending
-    # the original, still-encoded query/fragment suffix, since a decoded
-    # space, "#", or "?" from the source filename would otherwise land in
-    # the emitted Markdown as an invalid or misinterpreted URL character.
+    # the query/fragment suffix, since a decoded space, "#", or "?" from the
+    # source filename would otherwise land in the emitted Markdown as an
+    # invalid or misinterpreted URL character.
     return quote(public_url_for_okf_path(resolved), safe="/") + suffix
 
 
@@ -898,7 +905,7 @@ def decode_commonmark_link_path(raw_path: str) -> str:
     """Decode CommonMark escapes/references, then URI percent encoding.
 
     This intentionally operates only on the path component selected by
-    split_link_suffix(), leaving the original query and fragment untouched.
+    split_link_suffix(), leaving the query and fragment payload untouched.
     A single pass is required because an escaped ampersand (``\\&amp;``) is
     literal text, not the start of a character reference.
     """
@@ -941,6 +948,14 @@ def is_external_or_special_link(target: str) -> bool:
 
 
 def split_link_suffix(target: str) -> tuple[str, str]:
+    """Split a raw CommonMark destination into path and query/fragment suffix.
+
+    CommonMark decodes backslash escapes and character references before the
+    destination becomes a URL, so encoded ``#`` and ``?`` characters begin
+    URL suffix semantics too. Normalize only that delimiter token in the
+    returned suffix; leaving its raw escape/reference spelling in a rewritten
+    destination makes Hugo percent-encode or HTML-escape it as path text.
+    """
     cursor = 0
     while cursor < len(target):
         if (
@@ -948,6 +963,8 @@ def split_link_suffix(target: str) -> tuple[str, str]:
             and cursor + 1 < len(target)
             and target[cursor + 1] in ASCII_PUNCTUATION
         ):
+            if target[cursor + 1] in "#?":
+                return target[:cursor], target[cursor + 1 :]
             cursor += 2
             continue
         if target[cursor] == "&":
@@ -956,6 +973,12 @@ def split_link_suffix(target: str) -> tuple[str, str]:
                 value = reference.group(0)
                 entity_name = value[1:] if not value.startswith("&#") else None
                 if entity_name is None or entity_name in html.entities.html5:
+                    decoded = html.unescape(value)
+                    if decoded in "#?":
+                        return (
+                            target[:cursor],
+                            decoded + target[reference.end() :],
+                        )
                     cursor = reference.end()
                     continue
         if target[cursor] in "#?":

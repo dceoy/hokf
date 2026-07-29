@@ -292,6 +292,33 @@ class OkfHugoAdapterTest(unittest.TestCase):
         # sexagesimal reinterpretation (754).
         self.assertEqual(metadata["ratio"], "12:34")
 
+    def test_front_matter_rejects_duplicate_mapping_keys_at_every_depth(
+        self,
+    ) -> None:
+        examples = {
+            "top-level": (
+                "---\n"
+                "type: First\n"
+                "type: Second\n"
+                "---\n"
+            ),
+            "nested": (
+                "---\n"
+                "type: Minimal\n"
+                "extension:\n"
+                "  value: first\n"
+                "  value: second\n"
+                "---\n"
+            ),
+        }
+
+        for name, markdown in examples.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    FrontMatterError, "found duplicate key"
+                ):
+                    split_front_matter(markdown)
+
     def test_front_matter_ignores_indented_delimiter_in_block_scalar(self) -> None:
         metadata, body, present = split_front_matter(
             "---\n"
@@ -855,6 +882,29 @@ class OkfHugoAdapterTest(unittest.TestCase):
             self.assertIn("    [child](child.md)", body)
             self.assertIn("Real link: [child](/child/)", body)
 
+    def test_rewrite_markdown_links_skips_indented_code_in_block_containers(
+        self,
+    ) -> None:
+        body = (
+            ">     [quoted](child.md)\n\n"
+            "- >     [nested](child.md)\n\n"
+            "Real link: [child](child.md)\n"
+        )
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/child.md"),
+            },
+        )
+
+        self.assertIn(">     [quoted](child.md)", rewritten)
+        self.assertIn("- >     [nested](child.md)", rewritten)
+        self.assertIn("Real link: [child](/concepts/child/)", rewritten)
+        self.assertEqual(iter_link_targets(body), ["child.md"])
+
     def test_rewrite_markdown_links_treats_indented_list_continuation_as_prose(
         self,
     ) -> None:
@@ -1183,6 +1233,51 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
             )
             self.assertIn('href="/concepts/child/">the child</a>', parent_html)
             self.assertNotIn('href="child.md"', parent_html)
+
+    def test_commonmark_encoded_url_delimiters_resolve_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "[escaped fragment](child.md\\#details)\n\n"
+                "[entity fragment](child.md&#35;details)\n\n"
+                "[escaped query](child.md\\?view=full)\n\n"
+                "[entity query](child.md&#63;view=full)\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(
+                'href="/concepts/child/#details">escaped fragment</a>',
+                parent_html,
+            )
+            self.assertIn(
+                'href="/concepts/child/#details">entity fragment</a>',
+                parent_html,
+            )
+            self.assertIn(
+                'href="/concepts/child/?view=full">escaped query</a>',
+                parent_html,
+            )
+            self.assertIn(
+                'href="/concepts/child/?view=full">entity query</a>',
+                parent_html,
+            )
+            self.assertNotIn('href="child.md', parent_html)
 
     def test_space_in_resolved_path_is_percent_encoded_in_real_hugo_build(
         self,
