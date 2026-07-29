@@ -1357,6 +1357,36 @@ class OkfHugoAdapterTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("hugo"), "hugo binary is not installed")
 class OkfHugoAdapterRealBuildTest(unittest.TestCase):
+    def test_protocol_relative_links_remain_external_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [raw](//host/path.md).\n"
+                "See [decoded](&#47;&#47;host/path.md).\n"
+                "See [unsafe](javascript&#58;alert).\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertEqual(
+                parent_html.count('href="//host/path.md"'), 2, parent_html
+            )
+            self.assertNotIn('href="/host/path.md"', parent_html)
+            self.assertIn('href="#ZgotmplZ"', parent_html)
+            self.assertNotIn('href="javascript:alert"', parent_html)
+
     def test_escaped_backticks_leave_nested_internal_link_active(
         self,
     ) -> None:
