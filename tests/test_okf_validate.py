@@ -172,6 +172,29 @@ class OkfValidateTest(unittest.TestCase):
             self.assertNotIn("index", warning_subjects)
             self.assertIn("link:concepts/missing.md", warning_subjects)
 
+    def test_html_comment_link_does_not_count_as_indexed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            (root / "concepts").mkdir(parents=True)
+            (root / "index.md").write_text(
+                "---\nokf_version: \"0.2\"\n---\n"
+                "# Concepts\n\n"
+                "<!-- [Alpha](concepts/alpha.md) -->\n",
+                encoding="utf-8",
+            )
+            (root / "concepts" / "alpha.md").write_text(
+                "---\ntype: Minimal\n---\n# Alpha\n", encoding="utf-8"
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+            warning_subjects = {
+                finding.subject
+                for finding in findings
+                if finding.severity == "WARNING"
+            }
+
+            self.assertIn("index", warning_subjects)
+
     def test_balanced_and_percent_encoded_links_share_adapter_resolution(
         self,
     ) -> None:

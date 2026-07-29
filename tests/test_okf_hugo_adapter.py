@@ -512,7 +512,8 @@ class OkfHugoAdapterTest(unittest.TestCase):
                 "# Index\n\n"
                 "Inline example: `[child](child.md)`.\n\n"
                 "```markdown\n"
-                "[child](child.md)\n"
+                "<!-- [child](child.md)\n"
+                "<div>\n"
                 "```\n\n"
                 "Real link: [child](child.md)\n",
                 encoding="utf-8",
@@ -522,8 +523,35 @@ class OkfHugoAdapterTest(unittest.TestCase):
             _, body = load_generated(dst / "_index.md")
 
             self.assertIn("`[child](child.md)`", body)
-            self.assertIn("```markdown\n[child](child.md)\n```", body)
+            self.assertIn(
+                "```markdown\n<!-- [child](child.md)\n<div>\n```", body
+            )
             self.assertIn("Real link: [child](/child/)", body)
+
+    def test_rewrite_markdown_links_skips_raw_html_and_comments(self) -> None:
+        body = (
+            "<!-- [commented](child.md) -->\n\n"
+            '<span data-example="[attribute](child.md)">HTML</span>\n\n'
+            '<div data-example="[block-attribute](child.md)">\n'
+            "[block-content](child.md)\n"
+            "</div>\n\n"
+            "Real link: [child](child.md)\n"
+        )
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/child.md"),
+            },
+        )
+
+        self.assertIn("<!-- [commented](child.md) -->", rewritten)
+        self.assertIn('data-example="[attribute](child.md)"', rewritten)
+        self.assertIn("[block-content](child.md)", rewritten)
+        self.assertIn("Real link: [child](/concepts/child/)", rewritten)
+        self.assertEqual(iter_link_targets(body), ["child.md"])
 
     def test_rewrite_markdown_links_handles_reference_definitions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -47,6 +47,62 @@ FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 INDENTED_LINE_RE = re.compile(r"^(?: {4}|\t)")
 CONTAINER_LIST_MARKER_RE = re.compile(r"(?:[-+*]|\d{1,9}[.)])")
 ASCII_PUNCTUATION = frozenset(string.punctuation)
+# CommonMark raw HTML has seven block forms plus an inline tag grammar. Keep
+# these fragments local so validation and generation share the same ranges.
+HTML_LITERAL_BLOCK_START_RE = re.compile(
+    r"^ {0,3}<(?:pre|script|style|textarea)(?=[ \t>]|$)",
+    re.IGNORECASE,
+)
+HTML_LITERAL_BLOCK_END_RE = re.compile(
+    r"</(?:pre|script|style|textarea)>",
+    re.IGNORECASE,
+)
+HTML_BLOCK_TAG_NAMES = """
+address article aside base basefont blockquote body caption center col colgroup dd
+details dialog dir div dl dt fieldset figcaption figure footer form frame frameset
+h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu menuitem nav
+noframes ol optgroup option p param search section summary table tbody td tfoot th
+thead title tr track ul
+""".split()
+HTML_BLOCK_TAG_START_RE = re.compile(
+    rf"^ {{0,3}}</?(?:{'|'.join(HTML_BLOCK_TAG_NAMES)})(?=[ \t/>]|$)",
+    re.IGNORECASE,
+)
+HTML_LINE_ENDING_PATTERN = r"(?:\r\n|\r|\n)"
+HTML_OPTIONAL_SPACE_PATTERN = (
+    rf"[ \t]*(?:{HTML_LINE_ENDING_PATTERN}[ \t]*)?"
+)
+HTML_REQUIRED_SPACE_PATTERN = (
+    rf"(?:[ \t]+(?:{HTML_LINE_ENDING_PATTERN}[ \t]*)?"
+    rf"|[ \t]*{HTML_LINE_ENDING_PATTERN}[ \t]*)"
+)
+HTML_ATTRIBUTE_NAME_PATTERN = r"[A-Za-z_:][A-Za-z0-9_.:-]*"
+HTML_ATTRIBUTE_VALUE_PATTERN = r"""(?:"[^"]*"|'[^']*'|[^ "'=<>`]+)"""
+HTML_OPEN_TAG_PATTERN = (
+    r"<[A-Za-z][A-Za-z0-9-]*"
+    rf"(?:{HTML_REQUIRED_SPACE_PATTERN}{HTML_ATTRIBUTE_NAME_PATTERN}"
+    rf"(?:{HTML_OPTIONAL_SPACE_PATTERN}={HTML_OPTIONAL_SPACE_PATTERN}"
+    rf"{HTML_ATTRIBUTE_VALUE_PATTERN})?)*"
+    rf"{HTML_OPTIONAL_SPACE_PATTERN}/?>"
+)
+HTML_CLOSING_TAG_PATTERN = (
+    r"</[A-Za-z][A-Za-z0-9-]*"
+    rf"{HTML_OPTIONAL_SPACE_PATTERN}>"
+)
+HTML_TAG_RE = re.compile(
+    rf"(?:{HTML_OPEN_TAG_PATTERN}|{HTML_CLOSING_TAG_PATTERN})"
+)
+RAW_HTML_RE = re.compile(
+    rf"(?:"
+    r"<!--(?:>|->|(?:(?!-->).)*-->)"
+    r"|<\?(?:(?!\?>).)*\?>"
+    r"|<!\[CDATA\[(?:(?!\]\]>).)*\]\]>"
+    r"|<![A-Za-z][^>]*>"
+    rf"|{HTML_OPEN_TAG_PATTERN}"
+    rf"|{HTML_CLOSING_TAG_PATTERN}"
+    r")",
+    re.DOTALL,
+)
 
 
 @dataclass(frozen=True)
@@ -427,14 +483,168 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
         if not matched:
             run_index += 1
 
-    spans.sort()
+    return merge_spans(spans)
+
+
+def merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     merged: list[tuple[int, int]] = []
-    for start, end in spans:
+    for start, end in sorted(spans):
         if merged and start <= merged[-1][1]:
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         else:
             merged.append((start, end))
     return merged
+
+
+def html_block_start(
+    body: str,
+    line_start: int,
+    content_start: int,
+    content: str,
+    type_seven_allowed: bool,
+) -> tuple[str, str | re.Pattern[str] | None] | None:
+    """Classify a CommonMark HTML block start on one normalized line."""
+    indent = len(content) - len(content.lstrip(" "))
+    if indent > 3:
+        return None
+    candidate = content[indent:]
+    candidate_start = line_start + content_start + indent
+
+    if HTML_LITERAL_BLOCK_START_RE.match(content):
+        return ("pattern", HTML_LITERAL_BLOCK_END_RE)
+    if candidate.startswith("<!--"):
+        return ("token", "-->")
+    if candidate.startswith("<?"):
+        return ("token", "?>")
+    if (
+        candidate.startswith("<!")
+        and len(candidate) > 2
+        and candidate[2].isascii()
+        and candidate[2].isalpha()
+    ):
+        return ("token", ">")
+    if candidate.startswith("<![CDATA["):
+        return ("token", "]]>")
+    if HTML_BLOCK_TAG_START_RE.match(content):
+        return ("blank", None)
+
+    tag_match = HTML_TAG_RE.match(body, candidate_start)
+    line_end = line_start + len(content) + content_start
+    if (
+        type_seven_allowed
+        and tag_match is not None
+        and tag_match.end() <= line_end
+        and body[tag_match.end() : line_end].strip(" \t") == ""
+    ):
+        return ("blank", None)
+    return None
+
+
+def find_raw_html_spans(
+    body: str, code_spans: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """Return CommonMark HTML block and inline raw-HTML source ranges."""
+    lines = body.splitlines(keepends=True)
+    offsets: list[int] = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        offset += len(line)
+
+    block_spans: list[tuple[int, int]] = []
+    type_seven_allowed = True
+    code_line_index = 0
+    i = 0
+    while i < len(lines):
+        line_end = offsets[i] + len(lines[i])
+        while (
+            code_line_index < len(code_spans)
+            and code_spans[code_line_index][1] <= offsets[i]
+        ):
+            code_line_index += 1
+        if (
+            code_line_index < len(code_spans)
+            and offsets[i] < code_spans[code_line_index][1]
+            and line_end > code_spans[code_line_index][0]
+        ):
+            code_start, code_end = code_spans[code_line_index]
+            type_seven_allowed = (
+                code_start <= offsets[i] and code_end == line_end
+            )
+            i += 1
+            continue
+
+        text = lines[i].rstrip("\r\n")
+        container_tokens, content_start = parse_block_container_prefix(text)
+        content = text[content_start:]
+        start = html_block_start(
+            body,
+            offsets[i],
+            content_start,
+            content,
+            type_seven_allowed or bool(container_tokens),
+        )
+        if start is None:
+            type_seven_allowed = content.strip() == ""
+            i += 1
+            continue
+
+        end_kind, end_condition = start
+        end_index = i
+        while True:
+            candidate_text = lines[end_index].rstrip("\r\n")
+            candidate = strip_block_container_prefix(
+                candidate_text, container_tokens
+            )
+            assert candidate is not None
+
+            ended = False
+            if end_kind == "pattern":
+                assert isinstance(end_condition, re.Pattern)
+                ended = end_condition.search(candidate) is not None
+            elif end_kind == "token":
+                assert isinstance(end_condition, str)
+                ended = end_condition in candidate
+            if ended or end_index + 1 >= len(lines):
+                break
+
+            next_text = lines[end_index + 1].rstrip("\r\n")
+            next_candidate = strip_block_container_prefix(
+                next_text, container_tokens
+            )
+            if next_candidate is None or (
+                end_kind == "blank" and next_candidate.strip() == ""
+            ):
+                break
+            end_index += 1
+
+        block_spans.append(
+            (offsets[i], offsets[end_index] + len(lines[end_index]))
+        )
+        type_seven_allowed = True
+        i = end_index + 1
+
+    spans = list(block_spans)
+    excluded = merge_spans(block_spans + code_spans)
+    excluded_index = 0
+    for match in RAW_HTML_RE.finditer(body):
+        while (
+            excluded_index < len(excluded)
+            and excluded[excluded_index][1] <= match.start()
+        ):
+            excluded_index += 1
+        if (
+            excluded_index < len(excluded)
+            and match.end() > excluded[excluded_index][0]
+        ):
+            continue
+        spans.append((match.start(), match.end()))
+    return merge_spans(spans)
+
+
+def find_link_exclusion_spans(body: str) -> list[tuple[int, int]]:
+    code_spans = find_code_spans(body)
+    return merge_spans(code_spans + find_raw_html_spans(body, code_spans))
 
 
 def consume_indent(text: str, cursor: int, width: int) -> int | None:
@@ -824,14 +1034,17 @@ def iter_inline_links(body: str) -> list[InlineLink]:
 
 def iter_link_targets(body: str) -> list[str]:
     """Yield raw (unwrapped) destinations for inline links and reference-
-    style link definitions, skipping code regions. Shared by the adapter's
-    link rewriter and the validator's link/orphan checks so both inspect the
-    exact same Markdown link forms.
+    style link definitions, skipping code and raw HTML regions. Shared by the
+    adapter's link rewriter and the validator's link/orphan checks so both
+    inspect the exact same Markdown link forms.
     """
-    code_spans = find_code_spans(body)
+    excluded_spans = find_link_exclusion_spans(body)
 
-    def in_code(start: int, end: int) -> bool:
-        return any(start < c_end and end > c_start for c_start, c_end in code_spans)
+    def excluded(start: int, end: int) -> bool:
+        return any(
+            start < span_end and end > span_start
+            for span_start, span_end in excluded_spans
+        )
 
     reference_definitions = iter_reference_definitions(body)
 
@@ -844,13 +1057,13 @@ def iter_link_targets(body: str) -> list[str]:
     targets = [
         unwrap_angle_brackets(link.raw_target)
         for link in iter_inline_links(body)
-        if not in_code(link.start, link.end)
+        if not excluded(link.start, link.end)
         and not in_reference_definition(link.start, link.end)
     ]
     targets.extend(
         unwrap_angle_brackets(definition.raw_target)
         for definition in reference_definitions
-        if not in_code(definition.start, definition.end)
+        if not excluded(definition.start, definition.end)
     )
     return targets
 
@@ -860,10 +1073,13 @@ def rewrite_markdown_links(
     body: str,
     okf_paths: set[PurePosixPath],
 ) -> str:
-    code_spans = find_code_spans(body)
+    excluded_spans = find_link_exclusion_spans(body)
 
-    def in_code(start: int, end: int) -> bool:
-        return any(start < c_end and end > c_start for c_start, c_end in code_spans)
+    def excluded(start: int, end: int) -> bool:
+        return any(
+            start < span_end and end > span_start
+            for span_start, span_end in excluded_spans
+        )
 
     reference_definitions = iter_reference_definitions(body)
 
@@ -886,7 +1102,7 @@ def rewrite_markdown_links(
     replacements: list[tuple[int, int, str]] = []
 
     for link in iter_inline_links(body):
-        if in_code(link.start, link.end) or in_reference_definition(
+        if excluded(link.start, link.end) or in_reference_definition(
             link.start, link.end
         ):
             continue
@@ -898,7 +1114,7 @@ def rewrite_markdown_links(
             replacements.append((link.start, link.end, replacement))
 
     for definition in reference_definitions:
-        if in_code(definition.start, definition.end):
+        if excluded(definition.start, definition.end):
             continue
         replacement = rewritten_replacement(
             definition.raw_target,
