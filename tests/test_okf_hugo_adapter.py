@@ -911,6 +911,29 @@ class OkfHugoAdapterTest(unittest.TestCase):
         self.assertIn("Real link: [child](/concepts/child/)", rewritten)
         self.assertEqual(iter_link_targets(body), ["child.md"])
 
+    def test_rewrite_markdown_links_skips_fence_in_ordered_list_continuation(
+        self,
+    ) -> None:
+        body = (
+            "10. Example\n\n"
+            "    ```markdown\n"
+            "    [child](child.md)\n"
+            "\n"
+            "    ```\n"
+        )
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/child.md"),
+            },
+        )
+
+        self.assertEqual(rewritten, body)
+        self.assertEqual(iter_link_targets(body), [])
+
     def test_rewrite_markdown_links_handles_complete_reference_labels(
         self,
     ) -> None:
@@ -1914,6 +1937,77 @@ class OkfHugoAdapterRealBuildTest(unittest.TestCase):
             )
             self.assertIn('href="/concepts/child/">the child</a>', parent_html)
             self.assertNotIn('href="child.md"', parent_html)
+
+    def test_fenced_code_in_ordered_list_continuation_stays_literal_in_real_hugo_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "10. Example\n\n"
+                "    ```markdown\n"
+                "    [child](child.md)\n"
+                "\n"
+                "    ```\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('class="language-markdown"', parent_html)
+            self.assertIn("child.md", parent_html)
+            self.assertNotIn('href="/concepts/child/"', parent_html)
+
+    def test_noninterrupting_ordered_marker_does_not_define_reference(
+        self,
+    ) -> None:
+        body = (
+            "Text\n"
+            "2. [ref]: concepts/child.md\n\n"
+            "[child][ref]\n"
+        )
+
+        self.assertEqual(iter_link_targets(body), [])
+        self.assertEqual(
+            rewrite_markdown_links(
+                PurePosixPath("index.md"),
+                body,
+                {
+                    PurePosixPath("index.md"),
+                    PurePosixPath("concepts/child.md"),
+                },
+            ),
+            body,
+        )
+
+    def test_interrupting_and_sibling_ordered_markers_define_references(
+        self,
+    ) -> None:
+        interrupting = (
+            "Text\n"
+            "1. [ref]: concepts/child.md\n\n"
+            "[child][ref]\n"
+        )
+        sibling = (
+            "1. Text\n"
+            "2. [ref]: concepts/child.md\n\n"
+            "[child][ref]\n"
+        )
+
+        self.assertEqual(iter_link_targets(interrupting), ["concepts/child.md"])
+        self.assertEqual(iter_link_targets(sibling), ["concepts/child.md"])
 
     def test_multiline_reference_definition_inside_block_quote_resolves_in_real_hugo_build(
         self,

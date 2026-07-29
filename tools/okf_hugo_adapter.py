@@ -399,7 +399,23 @@ def find_code_block_spans(body: str) -> list[tuple[int, int]]:
         elif line_starts_list:
             active_list_tokens = container_tokens
 
-        fence_match = FENCE_OPEN_RE.match(text[content_start:])
+        # A fence on a continuation line carries the active list item's
+        # indentation rather than repeating its marker. Normalize that
+        # indentation before applying CommonMark's at-most-three-space fence
+        # rule, and retain the same effective prefix when looking for its
+        # closer.
+        active_content = (
+            strip_block_container_prefix(text, active_list_tokens)
+            if active_list_tokens
+            else None
+        )
+        fence_content = (
+            active_content if active_content is not None else container_content
+        )
+        fence_container_tokens = (
+            active_list_tokens if active_content is not None else container_tokens
+        )
+        fence_match = FENCE_OPEN_RE.match(fence_content)
         if fence_match:
             fence_run = fence_match.group(1)
             fence_char, fence_len = fence_run[0], len(fence_run)
@@ -409,7 +425,7 @@ def find_code_block_spans(body: str) -> list[tuple[int, int]]:
             j = i + 1
             while j < n:
                 candidate = strip_block_container_prefix(
-                    lines[j].rstrip("\r\n"), container_tokens
+                    lines[j].rstrip("\r\n"), fence_container_tokens
                 )
                 if candidate is not None and close_re.match(candidate):
                     break
@@ -849,6 +865,37 @@ def parse_block_container_prefix(text: str) -> tuple[tuple[tuple[str, int], ...]
         cursor = marker_start
         break
     return tuple(tokens), cursor
+
+
+def first_list_marker_start_number(text: str) -> int | None:
+    """Return the first list marker's ordered start, or None for a bullet.
+
+    This mirrors the container-prefix walk only until its first list marker.
+    CommonMark permits a list to interrupt an open paragraph, but an ordered
+    list can do so only when its start number is 1.
+    """
+    cursor = 0
+    while cursor < len(text):
+        indent = 0
+        while cursor < len(text) and text[cursor] == " " and indent < 3:
+            cursor += 1
+            indent += 1
+
+        if cursor < len(text) and text[cursor] == ">":
+            cursor += 1
+            if cursor < len(text) and text[cursor] in " \t":
+                cursor += 1
+            continue
+
+        list_match = CONTAINER_LIST_MARKER_RE.match(text, cursor)
+        if list_match is None:
+            return None
+        marker = list_match.group(0)
+        if marker[0].isdigit():
+            return int(marker[:-1])
+        return None
+
+    return None
 
 
 def strip_block_container_prefix(
@@ -1374,6 +1421,7 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
             else None
         )
         line_starts_list = any(kind == "list" for kind, _ in container_tokens)
+        list_interrupts_paragraph = True
 
         if active_list_tokens and active_content is None:
             if line_starts_list:
@@ -1383,9 +1431,17 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
         elif active_list_tokens and active_content is not None:
             nested_tokens, _ = parse_block_container_prefix(active_content)
             if any(kind == "list" for kind, _ in nested_tokens):
-                active_list_tokens += nested_tokens
+                ordered_start = first_list_marker_start_number(active_content)
+                if paragraph_open and ordered_start not in (None, 1):
+                    list_interrupts_paragraph = False
+                else:
+                    active_list_tokens += nested_tokens
         elif line_starts_list:
-            active_list_tokens = container_tokens
+            ordered_start = first_list_marker_start_number(text)
+            if paragraph_open and ordered_start not in (None, 1):
+                list_interrupts_paragraph = False
+            else:
+                active_list_tokens = container_tokens
 
         active_content = (
             strip_block_container_prefix(text, active_list_tokens)
@@ -1398,9 +1454,13 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
         effective_content = (
             active_content if active_content is not None else container_content
         )
+        if not list_interrupts_paragraph:
+            # The apparent marker remains literal paragraph content, so it
+            # does not enter a new container or make a definition eligible.
+            effective_tokens = prev_container_tokens
 
         if (
-            line_starts_list
+            (line_starts_list and list_interrupts_paragraph)
             or effective_tokens != prev_container_tokens
         ):
             # Every list marker starts a new item, even when a sibling uses
