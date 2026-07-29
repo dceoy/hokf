@@ -768,6 +768,70 @@ class OkfHugoAdapterTest(unittest.TestCase):
             self.assertIn("````markdown\n[child](child.md)\n`````", body)
             self.assertIn("Real link: [child](/child/)", body)
 
+    def test_rewrite_markdown_links_skips_fences_in_block_containers(self) -> None:
+        body = (
+            "> ````markdown\n"
+            "> [quoted](child.md)\n"
+            "> `````\n\n"
+            "- ````markdown\n"
+            "  [listed](child.md)\n"
+            "  `````\n\n"
+            "Real link: [child](child.md)\n"
+        )
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/child.md"),
+            },
+        )
+
+        self.assertIn("> [quoted](child.md)", rewritten)
+        self.assertIn("  [listed](child.md)", rewritten)
+        self.assertIn("Real link: [child](/concepts/child/)", rewritten)
+        self.assertEqual(iter_link_targets(body), ["child.md"])
+
+    def test_rewrite_markdown_links_handles_complete_reference_labels(
+        self,
+    ) -> None:
+        body = (
+            "See [escaped][foo \\]] and [multiline][foo bar].\n\n"
+            "[foo \\]]: child.md\n"
+            "[foo\n bar]: child.md\n"
+        )
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/child.md"),
+            },
+        )
+
+        self.assertIn("[foo \\]]: /concepts/child/", rewritten)
+        self.assertIn("[foo\n bar]: /concepts/child/", rewritten)
+        self.assertEqual(iter_link_targets(body), ["child.md", "child.md"])
+
+    def test_rewrite_markdown_links_allows_line_endings_in_inline_labels(
+        self,
+    ) -> None:
+        body = "See [the\nchild](child.md).\n"
+
+        rewritten = rewrite_markdown_links(
+            PurePosixPath("concepts/parent.md"),
+            body,
+            {
+                PurePosixPath("concepts/parent.md"),
+                PurePosixPath("concepts/child.md"),
+            },
+        )
+
+        self.assertEqual(rewritten, "See [the\nchild](/concepts/child/).\n")
+        self.assertEqual(iter_link_targets(body), ["child.md"])
+
     def test_rewrite_markdown_links_skips_indented_code_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -891,6 +955,91 @@ class OkfHugoAdapterTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("hugo"), "hugo binary is not installed")
 class OkfHugoAdapterRealBuildTest(unittest.TestCase):
+    def test_block_container_fences_preserve_code_in_real_hugo_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "> ````markdown\n"
+                "> [quoted](child.md)\n"
+                "> `````\n\n"
+                "- ````markdown\n"
+                "  [listed](child.md)\n"
+                "  `````\n\n"
+                "Real link: [child](child.md)\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            highlighted_target = 'style="color:#a6e22e">child.md</span>'
+            self.assertEqual(parent_html.count(highlighted_target), 2)
+            self.assertIn('href="/concepts/child/">child</a>', parent_html)
+
+    def test_reference_label_forms_resolve_in_real_hugo_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [escaped][foo \\]] and [multiline][foo bar].\n\n"
+                "[foo \\]]: child.md\n"
+                "[foo\n bar]: child.md\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">escaped</a>', parent_html)
+            self.assertIn('href="/concepts/child/">multiline</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
+    def test_multiline_inline_label_resolves_in_real_hugo_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "okf"
+            (src / "concepts").mkdir(parents=True)
+            (src / "index.md").write_text(
+                "---\ntype: Minimal\n---\n# Root\n", encoding="utf-8"
+            )
+            (src / "concepts" / "child.md").write_text(
+                "---\ntype: Minimal\n---\n# Child\n", encoding="utf-8"
+            )
+            (src / "concepts" / "parent.md").write_text(
+                "---\ntype: Minimal\n---\n"
+                "# Parent\n\n"
+                "See [the\nchild](child.md).\n",
+                encoding="utf-8",
+            )
+
+            public = build_with_real_hugo(src)
+
+            parent_html = (public / "concepts" / "parent" / "index.html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('href="/concepts/child/">the\nchild</a>', parent_html)
+            self.assertNotIn('href="child.md"', parent_html)
+
     def test_multiline_reference_definition_resolves_in_real_hugo_build(
         self,
     ) -> None:

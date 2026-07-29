@@ -34,13 +34,9 @@ except ModuleNotFoundError:
     )
 
 
-# CommonMark link reference definition opener, optionally indented up to
-# 3 spaces. Destinations and titles are parsed structurally below because
-# each may be separated from the preceding component by one line ending.
-REFERENCE_DEFINITION_START_RE = re.compile(
-    r"^[ \t]{0,3}\[[^\]\r\n]+\]:",
-    re.MULTILINE,
-)
+# CommonMark link reference definition candidate, optionally indented up to
+# 3 spaces. Labels, destinations, and titles are parsed structurally below.
+REFERENCE_DEFINITION_CANDIDATE_RE = re.compile(r"^[ \t]{0,3}\[", re.MULTILINE)
 BACKTICK_RUN_RE = re.compile(r"`+")
 INLINE_BLOCK_BREAK_RE = re.compile(r"\r?\n[ \t]*\r?\n")
 BLANK_LINE_RE = re.compile(r"(?:\r\n|\r|\n)[ \t]*(?:\r\n|\r|\n)")
@@ -50,6 +46,7 @@ CHARACTER_REFERENCE_RE = re.compile(
 FENCE_OPEN_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 INDENTED_LINE_RE = re.compile(r"^(?: {4}|\t)")
 LIST_MARKER_RE = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
+CONTAINER_LIST_MARKER_RE = re.compile(r"(?:[-+*]|\d{1,9}[.)])")
 ASCII_PUNCTUATION = frozenset(string.punctuation)
 
 
@@ -259,13 +256,12 @@ def hugo_metadata(document: OkfDocument) -> dict[str, Any]:
 def find_code_spans(body: str) -> list[tuple[int, int]]:
     """Return merged (start, end) character spans of Markdown code regions.
 
-    Covers fenced code blocks (opening fence indented up to 3 spaces, a
-    closing fence of the same character with at least as many markers),
-    indented code blocks, and inline code spans delimited by equal-length
-    backtick runs (including multiline spans), so link rewriting can skip all
-    of them. Indented-code detection intentionally backs off when the line
-    before the blank-line gap looks like a list marker, since indented
-    continuation of a list item is not a code block.
+    Covers fenced code blocks (including fences nested in block quotes and
+    list items), indented code blocks, and inline code spans delimited by
+    equal-length backtick runs (including multiline spans), so link rewriting
+    can skip all of them. Indented-code detection intentionally backs off when
+    the line before the blank-line gap looks like a list marker, since
+    indented continuation of a list item is not a code block.
     """
     spans: list[tuple[int, int]] = []
     lines = body.splitlines(keepends=True)
@@ -283,7 +279,8 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
         line = lines[i]
         text = line.rstrip("\r\n")
 
-        fence_match = FENCE_OPEN_RE.match(text)
+        container_tokens, content_start = parse_block_container_prefix(text)
+        fence_match = FENCE_OPEN_RE.match(text[content_start:])
         if fence_match:
             fence_run = fence_match.group(1)
             fence_char, fence_len = fence_run[0], len(fence_run)
@@ -291,7 +288,12 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
                 rf"^[ \t]{{0,3}}{re.escape(fence_char)}{{{fence_len},}}[ \t]*$"
             )
             j = i + 1
-            while j < n and not close_re.match(lines[j].rstrip("\r\n")):
+            while j < n:
+                candidate = strip_block_container_prefix(
+                    lines[j].rstrip("\r\n"), container_tokens
+                )
+                if candidate is not None and close_re.match(candidate):
+                    break
                 j += 1
             end_index = j if j < n else n - 1
             spans.append((offsets[i], offsets[end_index] + len(lines[end_index])))
@@ -382,6 +384,90 @@ def find_code_spans(body: str) -> list[tuple[int, int]]:
     return merged
 
 
+def consume_indent(text: str, cursor: int, width: int) -> int | None:
+    """Consume width columns of spaces/tabs from cursor."""
+    columns = 0
+    while cursor < len(text) and columns < width:
+        if text[cursor] == " ":
+            columns += 1
+        elif text[cursor] == "\t":
+            columns += 4 - (columns % 4)
+        else:
+            return None
+        cursor += 1
+    return cursor if columns == width else None
+
+
+def parse_block_container_prefix(text: str) -> tuple[tuple[tuple[str, int], ...], int]:
+    """Return block-quote/list container tokens and the content start.
+
+    List tokens retain their content indentation so continuation lines can be
+    normalized before testing for a closing fence.
+    """
+    tokens: list[tuple[str, int]] = []
+    cursor = 0
+    while cursor < len(text):
+        marker_start = cursor
+        indent = 0
+        while (
+            cursor < len(text)
+            and text[cursor] == " "
+            and indent < 3
+        ):
+            cursor += 1
+            indent += 1
+
+        if cursor < len(text) and text[cursor] == ">":
+            cursor += 1
+            if cursor < len(text) and text[cursor] in " \t":
+                cursor += 1
+            tokens.append(("quote", 0))
+            continue
+
+        list_match = CONTAINER_LIST_MARKER_RE.match(text, cursor)
+        if list_match is not None:
+            marker_end = list_match.end()
+            whitespace_end = marker_end
+            while (
+                whitespace_end < len(text)
+                and text[whitespace_end] in " \t"
+                and whitespace_end - marker_end < 4
+            ):
+                whitespace_end += 1
+            if whitespace_end > marker_end:
+                tokens.append(("list", whitespace_end - marker_start))
+                cursor = whitespace_end
+                continue
+
+        cursor = marker_start
+        break
+    return tuple(tokens), cursor
+
+
+def strip_block_container_prefix(
+    text: str, tokens: tuple[tuple[str, int], ...]
+) -> str | None:
+    """Strip the opener's block-container prefix from a continuation line."""
+    cursor = 0
+    for kind, width in tokens:
+        if kind == "quote":
+            indent = 0
+            while cursor < len(text) and text[cursor] == " " and indent < 3:
+                cursor += 1
+                indent += 1
+            if cursor >= len(text) or text[cursor] != ">":
+                return None
+            cursor += 1
+            if cursor < len(text) and text[cursor] in " \t":
+                cursor += 1
+        else:
+            next_cursor = consume_indent(text, cursor, width)
+            if next_cursor is None:
+                return None
+            cursor = next_cursor
+    return text[cursor:]
+
+
 def unwrap_angle_brackets(target: str) -> str:
     if target.startswith("<") and target.endswith(">"):
         return target[1:-1]
@@ -389,13 +475,13 @@ def unwrap_angle_brackets(target: str) -> str:
 
 
 def find_inline_link_openers(body: str) -> list[tuple[int, int]]:
-    """Locate `[`/`![` openers whose label is a balanced, single-line
-    CommonMark link/image label immediately followed by "(".
+    """Locate `[`/`![` openers whose balanced CommonMark label is followed by
+    "(".
 
     Nested brackets (`[see [child]](child.md)`) and backslash-escaped
     delimiters (`[child \\]](child.md)`) inside the label are honored, since a
-    regular expression cannot track bracket depth. Labels do not span a
-    newline, matching this parser's existing single-line scope.
+    regular expression cannot track bracket depth. Soft line endings are
+    allowed inside labels, but blank lines terminate the candidate.
 
     Returns (label_start, destination_start) pairs, where label_start is the
     index of the optional "!" or the "[", and destination_start is the index
@@ -422,8 +508,13 @@ def find_inline_link_openers(body: str) -> list[tuple[int, int]]:
             if inner == "\\" and cursor + 1 < length:
                 cursor += 2
                 continue
-            if inner == "\n":
-                break
+            if inner in "\r\n":
+                if BLANK_LINE_RE.match(body, cursor):
+                    break
+                next_line = consume_line_ending(body, cursor)
+                assert next_line is not None
+                cursor = next_line
+                continue
             if inner == "[":
                 depth += 1
             elif inner == "]":
@@ -438,6 +529,58 @@ def find_inline_link_openers(body: str) -> list[tuple[int, int]]:
             index = closed_at + 2
             continue
         index += 1
+    return openers
+
+
+def find_reference_definition_openers(body: str) -> list[tuple[int, int]]:
+    """Locate CommonMark reference labels and return (start, after-colon).
+
+    Reference labels may contain backslash-escaped punctuation and one line
+    ending, but not an unescaped opening bracket or an empty/whitespace-only
+    label.
+    """
+    openers: list[tuple[int, int]] = []
+    for match in REFERENCE_DEFINITION_CANDIDATE_RE.finditer(body):
+        cursor = match.end()
+        label_characters = 0
+        has_non_whitespace = False
+        line_endings = 0
+        while cursor < len(body):
+            char = body[cursor]
+            if (
+                char == "\\"
+                and cursor + 1 < len(body)
+                and body[cursor + 1] in ASCII_PUNCTUATION
+            ):
+                label_characters += 1
+                has_non_whitespace = True
+                cursor += 2
+                continue
+            if char == "[":
+                break
+            if char == "]":
+                if (
+                    label_characters <= 999
+                    and has_non_whitespace
+                    and cursor + 1 < len(body)
+                    and body[cursor + 1] == ":"
+                ):
+                    openers.append((match.start(), cursor + 2))
+                break
+            if char in "\r\n":
+                if line_endings == 1:
+                    break
+                next_line = consume_line_ending(body, cursor)
+                assert next_line is not None
+                line_endings += 1
+                label_characters += 1
+                cursor = next_line
+                continue
+            label_characters += 1
+            has_non_whitespace = has_non_whitespace or not char.isspace()
+            if label_characters > 999:
+                break
+            cursor += 1
     return openers
 
 
@@ -537,8 +680,8 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
     destination.
     """
     definitions: list[ReferenceDefinition] = []
-    for match in REFERENCE_DEFINITION_START_RE.finditer(body):
-        cursor = consume_spaces_and_tabs(body, match.end())
+    for definition_start, after_colon in find_reference_definition_openers(body):
+        cursor = consume_spaces_and_tabs(body, after_colon)
         next_line = consume_line_ending(body, cursor)
         if next_line is not None:
             cursor = consume_spaces_and_tabs(body, next_line)
@@ -574,9 +717,9 @@ def iter_reference_definitions(body: str) -> list[ReferenceDefinition]:
 
         definitions.append(
             ReferenceDefinition(
-                start=match.start(),
+                start=definition_start,
                 end=end,
-                prefix=body[match.start():target_start],
+                prefix=body[definition_start:target_start],
                 raw_target=body[target_start:target_end],
                 suffix=body[target_end:end],
             )
