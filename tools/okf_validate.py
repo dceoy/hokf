@@ -45,6 +45,7 @@ except ModuleNotFoundError:
 ATX_HEADING_LINE_RE = re.compile(
     r"^[ \t]{0,3}(#{1,6})(?:[ \t]+(.*?)[ \t]*|[ \t]*)$"
 )
+ATX_CLOSING_SEQUENCE_RE = re.compile(r"(?:^|[ \t]+)#+$")
 ACTOR_RE = re.compile(r"^(?:human:[^\s:]+|process:[^\s:]+|[^\s/]+/[^\s/]+)$")
 TAG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 STATUS_VALUES = {"draft", "stable", "deprecated"}
@@ -284,12 +285,21 @@ def find_markdown_headings(body: str) -> list[MarkdownHeading]:
                 headings.append(
                     MarkdownHeading(
                         level=len(match.group(1)),
-                        text=(match.group(2) or "").strip(),
+                        text=strip_atx_closing_sequence(match.group(2) or ""),
                         line_start=offset,
                     )
                 )
         offset += len(line)
     return headings
+
+
+def strip_atx_closing_sequence(text: str) -> str:
+    """Return CommonMark ATX heading text without optional closing hashes."""
+    text = text.strip(" \t")
+    closing_sequence = ATX_CLOSING_SEQUENCE_RE.search(text)
+    if closing_sequence is not None:
+        text = text[: closing_sequence.start()].rstrip(" \t")
+    return text
 
 
 def first_nonblank_line_start(body: str) -> int | None:

@@ -7,7 +7,7 @@ from datetime import date
 from io import StringIO
 from pathlib import Path
 
-from tools.okf_validate import main, validate_bundle
+from tools.okf_validate import find_markdown_headings, main, validate_bundle
 
 
 class OkfValidateTest(unittest.TestCase):
@@ -182,6 +182,32 @@ class OkfValidateTest(unittest.TestCase):
 
             self.assertIn(("log.md", "body"), error_keys)
             self.assertNotIn(("log.md", "date headings"), error_keys)
+
+    def test_log_accepts_optional_atx_closing_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "okf"
+            root.mkdir()
+            (root / "index.md").write_text("# Index\n", encoding="utf-8")
+            (root / "log.md").write_text(
+                "# Bundle Log\n\n## 2026-07-03 ##\n",
+                encoding="utf-8",
+            )
+
+            findings = validate_bundle(root, today=date(2026, 7, 3))
+
+            self.assertEqual(findings, [])
+
+    def test_atx_closing_hashes_require_whitespace_and_no_escape(self) -> None:
+        headings = find_markdown_headings(
+            "## 2026-07-03 ##\n"
+            "## 2026-07-02#\n"
+            "## 2026-07-01 \\##\n"
+        )
+
+        self.assertEqual(
+            [heading.text for heading in headings],
+            ["2026-07-03", "2026-07-02#", "2026-07-01 \\##"],
+        )
 
     def test_recursive_yaml_alias_reports_frontmatter_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
