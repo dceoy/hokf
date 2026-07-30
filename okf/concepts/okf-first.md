@@ -10,6 +10,7 @@ generated:
   by: human:hokf-maintainer
   at: 2026-07-27T09:15:00Z
 ---
+
 # OKF-first authoring
 
 Create and update concepts under `okf/`. A concept needs only a non-empty
