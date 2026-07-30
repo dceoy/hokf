@@ -3,11 +3,12 @@
 set -euxo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-# Python
+# Markdown
 npx -y prettier --write './**/*.md'
 
 # Shell scripts
-git ls-files -z -- '*.sh' '*.bash' '*.bats' | xargs -0 -t shfmt --write
+git ls-files -z -- '*.sh' '*.bash' '*.bats' \
+  | xargs -0 -t shfmt --write --indent=2 --binary-next-line --case-indent --space-redirects
 git ls-files -z -- '*.sh' '*.bash' '*.bats' | xargs -0 -t shellcheck
 
 # GitHub Actions
