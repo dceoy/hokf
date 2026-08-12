@@ -25,7 +25,7 @@ audience:
   - coding-agents
 ---
 
-# Architecture
+## Architecture
 
 HOKF has two deliberately separate layers:
 
