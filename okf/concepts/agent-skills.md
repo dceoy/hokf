@@ -12,7 +12,7 @@ extension:
   preferred_interface: progressive-disclosure
 ---
 
-# Repository Agent Skills
+## Repository Agent Skills
 
 Repository-local skills under `.agents/skills/` give coding agents focused
 instructions for:
