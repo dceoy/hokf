@@ -11,7 +11,7 @@ generated:
   at: 2026-07-27T09:15:00Z
 ---
 
-# OKF-first authoring
+## OKF-first authoring
 
 Create and update concepts under `okf/`. A concept needs only a non-empty
 `type`, though a useful concept normally includes a title, description, tags,

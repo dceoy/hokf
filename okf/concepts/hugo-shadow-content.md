@@ -16,7 +16,7 @@ sources:
 stale_after: 2027-01-27
 ---
 
-# Hugo shadow content
+## Hugo shadow content
 
 `site/content/` is untracked, disposable output. Generate it with:
 
