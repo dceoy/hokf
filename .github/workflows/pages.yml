@@ -20,7 +20,6 @@ jobs:
       HUGO_VERSION: "0.163.3"
       HUGO_SHA256: "1234302ece1167cef2c252aaa69c89b4f0afc5851f1a30536d693e8e7fc4d1bf"
       PYTHON_VERSION: "3.13.5"
-      NODE_VERSION: "22.22.1"
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
@@ -94,11 +93,11 @@ jobs:
           hugo --source "${fixture}" --destination "${fixture}/public"
           test -f "${fixture}/public/warning-only/index.html"
           test -f "${fixture}/public/warning-only-source-item/index.html"
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1   # v7.1.0
+      - name: Set up pnpm-managed Node.js
+        uses: pnpm/setup@a0881977cd8ea73b1ed212236c99ca10dcc80cf4  # v3.1.1
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
+          version: 12
+          install: false
       - name: Install pinned Pagefind
         run: npm ci --ignore-scripts
       - name: Build Hugo site
