@@ -11,7 +11,7 @@ permissions:
   contents: read
 jobs:
   markdown-lint:
-    uses: dceoy/gha-for-devops/.github/workflows/markdown-lint.yml@main  # zizmor: ignore[unpinned-uses]
+    uses: dceoy/gha-for-devops/.github/workflows/markdown-lint.yml@9e394d7c18b3a00fb853cd3c693cc4eeb5f0c825  # v2.3.0
     with:
       search-path: .
   dependabot-auto-merge:
@@ -19,7 +19,7 @@ jobs:
       github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
     needs:
       - markdown-lint
-    uses: dceoy/gha-for-devops/.github/workflows/dependabot-auto-merge.yml@main  # zizmor: ignore[unpinned-uses]
+    uses: dceoy/gha-for-devops/.github/workflows/dependabot-auto-merge.yml@9e394d7c18b3a00fb853cd3c693cc4eeb5f0c825  # v2.3.0
     permissions:
       contents: write
       pull-requests: write
