@@ -133,7 +133,7 @@ jobs:
     permissions:
       pages: write
       id-token: write
-    uses: dceoy/gha-for-devops/.github/workflows/github-pages-deploy.yml@main   # zizmor: ignore[unpinned-uses]
+    uses: dceoy/gha-for-devops/.github/workflows/github-pages-deploy.yml@9e394d7c18b3a00fb853cd3c693cc4eeb5f0c825  # v2.3.0
     with:
       artifact-name: github-pages
       environment: github-pages
