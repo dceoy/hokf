@@ -19,7 +19,7 @@ jobs:
     env:
       HUGO_VERSION: "0.163.3"
       HUGO_SHA256: "1234302ece1167cef2c252aaa69c89b4f0afc5851f1a30536d693e8e7fc4d1bf"
-      PYTHON_VERSION: "3.13.5"
+      PYTHON_VERSION: "3.13.18"
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
