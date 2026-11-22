@@ -34,6 +34,26 @@ Use `--warnings-as-errors` only for an explicit quality gate.
 Do not reject missing optional metadata. Preserve unknown `type` values,
 producer-defined fields, and nested values exactly in meaning.
 
+## Optional recurring-evidence curation
+
+For bundles fed by dated observations, use the
+[evidence-backed curation guidance](../../../okf/concepts/evidence-backed-curation.md)
+to propose recurring themes deterministically:
+
+- Collect dated, traceable, independently supported evidence; surface missing
+  data and contradictions rather than treating repetition as confirmation.
+- Apply producer-specific persistence thresholds. AIMS used at least three
+  distinct dates over at least 14 days for a promotion candidate, but these
+  values are neither HOKF defaults nor OKF v0.2 requirements.
+- Produce a reviewable proposal with source links and evidence identifiers.
+  Require human approval before editing canonical concepts or merging a PR.
+- Consider obsolescence based on `stale_after`, contradicted evidence, and
+  producer-specific absence windows (AIMS used 60 days). Missing observations
+  alone do not justify automatic deletion or deprecation.
+
+Keep this optional process separate from the validator: conformance findings
+remain blocking or advisory according to the existing rules.
+
 ## Maintain reserved documents
 
 Keep indexes as progressive-disclosure headings and link lists. Permit front

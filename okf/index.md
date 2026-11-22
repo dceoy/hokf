@@ -15,3 +15,4 @@ Start here for a progressive overview of the framework and its boundaries.
 
 - [Hugo shadow content](concepts/hugo-shadow-content.md) - How disposable Hugo content is generated and rendered.
 - [Agent Skills](concepts/agent-skills.md) - Repository-local workflows for authors, curators, builders, and reviewers.
+- [Evidence-backed curation](concepts/evidence-backed-curation.md) - Review recurring observations before promoting or retiring durable knowledge.
