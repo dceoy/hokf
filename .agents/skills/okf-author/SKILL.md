@@ -36,6 +36,20 @@ when encountered unless the task includes migrating it to `generated`.
 Preserve every unknown type, key, and nested value when editing. Use standard
 relative or bundle-root-relative Markdown links ending in `.md`.
 
+## Ground generated knowledge in evidence
+
+When a concept summarizes observations or AI-produced interpretation, keep
+validated source records authoritative for dates, measurements, scores, and
+other machine-checkable facts. Cite specific evidence artifacts or IDs and
+distinguish observed facts from hypotheses. Prefer immutable or dated source
+references where available. Do not treat generated prose as a replacement
+for a producer's structured data.
+
+For repeated observations, follow the optional
+[evidence-backed curation guidance](../../../okf/concepts/evidence-backed-curation.md)
+before proposing a durable concept. A recurrence threshold is not an OKF
+schema requirement; do not silently promote LLM-derived candidates.
+
 ## Maintain discovery and history
 
 Add a concise link and description to the nearest `index.md`. Index files use

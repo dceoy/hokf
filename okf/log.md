@@ -1,5 +1,9 @@
 # HOKF Update Log
 
+## 2026-11-22
+
+- **Curation guidance**: Documented evidence-backed promotion, data/prose trust boundaries, and reviewed retirement criteria derived from AIMS; the example recurrence thresholds remain producer-specific.
+
 ## 2026-07-27
 
 - **Update**: Aligned the sample bundle, adapter, and validator with Open Knowledge Format v0.2.

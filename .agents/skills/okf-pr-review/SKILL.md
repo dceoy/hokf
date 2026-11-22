@@ -25,6 +25,25 @@ review results unless explicitly requested.
 - Keep conformance errors blocking and broken links, staleness, orphans, tags,
   and duplicates advisory by default.
 
+## Review evidence-backed knowledge changes
+
+When a PR promotes, revises, or retires knowledge inferred from dated or
+AI-generated artifacts, check that:
+
+- The producing system's validated records remain authoritative for
+  machine-checkable facts; prose is explicitly interpretive and traceable to
+  source artifacts or evidence IDs.
+- Repeated evidence is independently supported and not contradicted by newer
+  observations; any persistence threshold is justified for that domain rather
+  than imposed as an OKF v0.2 conformance rule.
+- Promotion and retirement are explicit human-reviewed decisions, never
+  automatic merges, deletions, or deprecations based only on a timer.
+- An obsolete concept is reverified or marked `deprecated` with an accurate
+  log entry; optional provenance and lifecycle fields are preserved.
+
+See [evidence-backed curation](../../../okf/concepts/evidence-backed-curation.md)
+for the optional workflow and example (non-normative) thresholds.
+
 ## Check the static site and supply chain
 
 - Exercise Hugo with a GitHub Pages project-path base URL and inspect internal
