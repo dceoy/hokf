@@ -4,7 +4,11 @@
   "private": true,
   "description": "Pinned static search tooling for the HOKF Hugo site.",
   "scripts": {
-    "pagefind": "pagefind --site site/public"
+    "pagefind": "pagefind --site site/public",
+    "format": "pnpm dlx oxfmt@0.79.0 --write '**/*.{md,mdx,markdown}' --no-error-on-unmatched-pattern",
+    "format:check": "pnpm dlx oxfmt@0.79.0 --check '**/*.{md,mdx,markdown}' --no-error-on-unmatched-pattern",
+    "lint": "pnpm dlx markdownlint-cli2@0.24.1 '**/*.{md,mdx,markdown}'",
+    "lint:fix": "pnpm dlx markdownlint-cli2@0.24.1 --fix '**/*.{md,mdx,markdown}'"
   },
   "devDependencies": {
     "pagefind": "1.6.0"
