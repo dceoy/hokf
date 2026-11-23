@@ -7,10 +7,12 @@
     "pagefind": "pagefind --site site/public",
     "format": "pnpm dlx oxfmt@0.79.0 --write '**/*.{md,mdx,markdown}' --no-error-on-unmatched-pattern",
     "format:check": "pnpm dlx oxfmt@0.79.0 --check '**/*.{md,mdx,markdown}' --no-error-on-unmatched-pattern",
-    "lint": "pnpm dlx markdownlint-cli2@0.24.1 '**/*.{md,mdx,markdown}'",
-    "lint:fix": "pnpm dlx markdownlint-cli2@0.24.1 --fix '**/*.{md,mdx,markdown}'"
+    "lint": "markdownlint-cli2 '**/*.{md,mdx,markdown}'",
+    "lint:fix": "markdownlint-cli2 --fix '**/*.{md,mdx,markdown}'"
   },
   "devDependencies": {
+    "markdownlint-cli2": "0.24.1",
+    "oxlint": "1.93.0",
     "pagefind": "1.6.0"
   },
   "engines": {
