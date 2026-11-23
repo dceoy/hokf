@@ -133,7 +133,7 @@ jobs:
     permissions:
       pages: write
       id-token: write
-    uses: dceoy/gha-for-devops/.github/workflows/github-pages-deploy.yml@9e394d7c18b3a00fb853cd3c693cc4eeb5f0c825  # v2.3.0
+    uses: dceoy/gha-for-devops/.github/workflows/github-pages-deploy.yml@2a8aaab7fcc91494813c33293345e000244a0d90  # v2.3.1
     with:
       artifact-name: github-pages
       environment: github-pages
