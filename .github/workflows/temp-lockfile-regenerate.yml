@@ -18,6 +18,5 @@ jobs:
         run: |
           npm install --package-lock-only --ignore-scripts --no-audit --no-fund
           echo LOCKFILE_GZIP_BASE64_BEGIN
-          gzip -n -c package-lock.json | base64 -w0
-          echo
+          cat package-lock.json
           echo LOCKFILE_GZIP_BASE64_END
