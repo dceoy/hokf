@@ -1,0 +1,23 @@
+name: Temporary lockfile regeneration
+on:
+  pull_request:
+    paths:
+      - package.json
+      - .github/workflows/temp-lockfile-regenerate.yml
+permissions:
+  contents: read
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+      - name: Regenerate package-lock.json without running scripts
+        run: |
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          echo LOCKFILE_GZIP_BASE64_BEGIN
+          gzip -n -c package-lock.json | base64 -w0
+          echo
+          echo LOCKFILE_GZIP_BASE64_END
