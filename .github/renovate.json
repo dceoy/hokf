@@ -11,12 +11,6 @@
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "automerge": true,
       "automergeType": "pr"
-    },
-    {
-      "description": "Require manual review for Python compatibility range changes",
-      "matchManagers": ["pep621"],
-      "matchDepTypes": ["requires-python"],
-      "automerge": false
     }
   ]
 }
